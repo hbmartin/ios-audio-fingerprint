@@ -30,6 +30,9 @@ replacement:
 - `codex-analysis/exports/symbols.tsv`
 - `codex-analysis/exports/rust-strings.tsv`
 - `codex-analysis/exports/oxidizer-core.txt`
+- `codex-analysis/exports/reoxide/core-index.tsv`
+- `codex-analysis/exports/reoxide/core-decompile.c`
+- `codex-analysis/logs/reoxide-ghidra-core-export.log`
 - `codex-analysis/reimplementation-plan.md`
 - `Sources/Fingerprint/fingerprint_uniffi.swift`
 - `Tests/FingerprintTests/FingerprintTests.swift`
@@ -43,7 +46,9 @@ Tool usage behind those artifacts:
 - GhidRust was loaded into Ghidra and contributed Rust demangling, Rust common
   data types, Rust string analysis, and Rust standard-library recognition.
 - Oxidizer was used for focused Rust-aware decompilation and symbol recovery.
-- ReOxide was attempted but did not produce usable analysis on the macOS host.
+- ReOxide was later run successfully from the local macOS build in
+  `/Users/haroldmartin/Downloads/reoxide/venv`. Its Ghidra-integrated Rust
+  printer produced focused decompilation for 27 core functions.
 
 ## 3. Confidence Levels
 
@@ -67,7 +72,7 @@ Current confidence map:
 | Checkpoint matcher API | High | Confirmed by symbols and wrapper methods. |
 | Audio target rate and frame constants | High | `0x2b11` = `11025`, `0x1000` = `4096`; hop and hash stride inferred consistently. |
 | FFT/chroma pipeline | Medium | Confirmed function names and constants; exact floating-point details need differential tests. |
-| Hash bit layout | Medium | Current implementation follows recovered behavior, but exact original bit packing needs fixture comparison. |
+| Hash bit layout | Medium | ReOxide confirms the threshold and energy nibble; exact delta-bit mapping still needs fixture comparison. |
 | MP3 support in Rust | High | Original binary includes Symphonia MP3 symbols and `decode_mp3_bytes`. |
 | Swift reimplementation MP3 behavior | High | Current Swift source reports MP3 as unsupported. |
 
@@ -1595,4 +1600,3 @@ The pure Rust reimplementation is complete when:
    explicit, reviewed divergence report.
 8. The existing binary target can be removed or retained only as a test fixture,
    not as an implementation dependency.
-
