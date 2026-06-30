@@ -1,0 +1,12 @@
+name,category,iterations,warmups,checksum,min_ms,median_ms,mean_ms,p90_ms,max_ms,standard_deviation_ms,workload
+serialization_round_trip_small_fingerprint,serialization,50,10,32400,0.001041,0.001125,0.001246,0.001125,0.007958,0.000959,"128 deterministic hashes, 60s duration"
+serialization_round_trip_large_fingerprint,serialization,50,10,103463609600,0.114584,0.124979,0.133916,0.151734,0.308083,0.029144,"16,384 deterministic hashes, 60m duration"
+compare_hashes_large_equal_inputs,comparison,50,10,50000000,0.020083,0.023458,0.023485,0.024066,0.031041,0.002119,"65,536 hashes compared against identical input"
+compare_hashes_large_different_inputs,comparison,50,10,25070200,0.020833,0.022667,0.023399,0.027037,0.030375,0.002534,"65,536 hashes compared against a different deterministic input"
+compare_hashes_with_drift,comparison,50,10,50000000,0.360625,0.393771,0.390932,0.408938,0.463458,0.021342,"8,192 hashes searched with a 64-hash offset and max drift 64"
+checkpoint_matcher_add_and_query,matching,50,10,50500,0.836959,0.889875,0.903642,1.021175,1.090667,0.061673,"1,000 checkpoints, 256 hashes each, drift 4, top 10 query"
+streaming_fingerprinter_mono_f32_five_seconds,fingerprinting,50,10,251100,3.252167,3.513354,3.539042,3.832396,4.044542,0.191538,"5s mono Float32 synthetic tone at 11,025 Hz"
+streaming_fingerprinter_stereo_f32_resample_five_seconds,fingerprinting,50,10,251100,3.541125,3.825584,3.827468,3.984108,4.687291,0.180373,"5s stereo Float32 synthetic tone at 44,100 Hz, downmixed and resampled"
+windowed_wav_fingerprinting_six_seconds,fingerprinting,50,10,3150,10.644000,10.937728,10.949548,11.166795,11.565083,0.184063,"6s mono 16-bit PCM WAV at 11,025 Hz, 2s windows every 500ms"
+streaming_windowed_fingerprinter_stereo_resample_six_seconds,fingerprinting,50,10,300350,9.840417,10.122813,10.154499,10.406392,10.806250,0.181881,"6s stereo Float32 synthetic tone at 44,100 Hz in 44,100-sample chunks"
+mp3_unsupported_fast_path,format,50,10,50,0.000250,0.000250,0.000258,0.000292,0.000292,0.000017,"4,100-byte MP3-like payload, unsupported format error path"

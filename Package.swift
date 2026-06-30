@@ -6,12 +6,18 @@ let package = Package(
     platforms: [.iOS(.v13), .macOS(.v13)],
     products: [
         .library(name: "Fingerprint", targets: ["Fingerprint"]),
+        .executable(name: "FingerprintBenchmarkRunner", targets: ["FingerprintBenchmarkRunner"]),
     ],
     targets: [
         .target(
             name: "Fingerprint",
             dependencies: [],
             path: "Sources/Fingerprint"
+        ),
+        .executableTarget(
+            name: "FingerprintBenchmarkRunner",
+            dependencies: ["Fingerprint"],
+            path: "Benchmarks/FingerprintBenchmarkRunner"
         ),
         .binaryTarget(
             name: "FingerprintFFI",
