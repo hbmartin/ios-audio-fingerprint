@@ -11,7 +11,7 @@ let package = Package(
     targets: [
         .target(
             name: "Fingerprint",
-            dependencies: [],
+            dependencies: ["FingerprintFFI"],
             path: "Sources/Fingerprint"
         ),
         .executableTarget(
