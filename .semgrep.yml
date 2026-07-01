@@ -9,12 +9,36 @@ rules:
         - /.github/workflows/*.yml
         - /.github/workflows/*.yaml
     patterns:
-      - pattern-regex: 'uses:\s+[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+@[^\s#]+'
-      - pattern-not-regex: 'uses:\s+[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+@[a-f0-9]{40}\s*#\s*\S+'
+      - pattern-regex: 'uses:\s+[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+(?:/[A-Za-z0-9_.-]+)*@[^\s#]+'
+      - pattern-not-regex: 'uses:\s+[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+(?:/[A-Za-z0-9_.-]+)*@[a-f0-9]{40}\s*#\s*\S+'
+
+  - id: github-actions-checkout-persist-credentials
+    languages:
+      - yaml
+    severity: ERROR
+    message: "Set persist-credentials: false for actions/checkout steps that do not push back to the repository."
+    paths:
+      include:
+        - /.github/workflows/*.yml
+        - /.github/workflows/*.yaml
+    patterns:
+      - pattern: |
+          uses: $ACTION
+      - metavariable-regex:
+          metavariable: $ACTION
+          regex: '^actions/checkout@'
+      - pattern-not-inside: |
+          - ...
+            uses: $ACTION
+            ...
+            with:
+              ...
+              persist-credentials: false
+              ...
 
   - id: github-actions-release-cache-with-write-permissions
     languages:
-      - generic
+      - yaml
     severity: ERROR
     message: "Build release artifacts from clean state; do not use actions/cache in workflows or jobs with contents: write."
     paths:
@@ -22,4 +46,30 @@ rules:
         - /.github/workflows/*.yml
         - /.github/workflows/*.yaml
     patterns:
-      - pattern-regex: '(?s)contents:\s*write\b.*uses:\s*actions/cache@'
+      - pattern: |
+          uses: $ACTION
+      - metavariable-regex:
+          metavariable: $ACTION
+          regex: '^actions/cache@'
+      - pattern-either:
+          - pattern-inside: |
+              ...
+              permissions:
+                ...
+                contents: write
+                ...
+              ...
+              jobs: $JOBS
+              ...
+          - pattern-inside: |
+              $JOB:
+                ...
+                permissions:
+                  ...
+                  contents: write
+                  ...
+                ...
+                steps:
+                  ...
+                  - uses: $ACTION
+                    ...
