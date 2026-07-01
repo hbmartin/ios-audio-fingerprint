@@ -1,5 +1,0 @@
-module FingerprintFFI {
-    header "FingerprintFFI.h"
-    export *
-}
-

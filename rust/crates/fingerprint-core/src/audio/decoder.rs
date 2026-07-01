@@ -12,6 +12,9 @@ use crate::audio::wav::{decode_wave_bytes, looks_like_wave};
 use crate::audio::DecodedAudio;
 use crate::error::FingerprintError;
 
+const MAX_MP3_INPUT_BYTES: usize = 128 * 1024 * 1024;
+const MAX_MP3_DECODED_SAMPLES: usize = 64 * 1024 * 1024;
+
 pub fn decode_audio_bytes(data: &[u8]) -> Result<DecodedAudio, FingerprintError> {
     if looks_like_wave(data) {
         return decode_wave_bytes(data);
@@ -32,6 +35,10 @@ fn looks_like_mp3(bytes: &[u8]) -> bool {
 }
 
 fn decode_mp3_bytes(data: &[u8]) -> Result<DecodedAudio, FingerprintError> {
+    if data.len() > MAX_MP3_INPUT_BYTES {
+        return Err(FingerprintError::invalid("MP3 input is too large"));
+    }
+
     let cursor = Cursor::new(data.to_vec());
     let media_source = MediaSourceStream::new(Box::new(cursor), Default::default());
     let mut hint = Hint::new();
@@ -95,7 +102,11 @@ fn decode_mp3_bytes(data: &[u8]) -> Result<DecodedAudio, FingerprintError> {
                 channel_count = spec.channels.count() as u16;
                 let mut sample_buffer = SampleBuffer::<f32>::new(decoded.capacity() as u64, spec);
                 sample_buffer.copy_interleaved_ref(decoded);
-                samples.extend_from_slice(sample_buffer.samples());
+                let decoded_samples = sample_buffer.samples();
+                if samples.len().saturating_add(decoded_samples.len()) > MAX_MP3_DECODED_SAMPLES {
+                    return Err(FingerprintError::invalid("MP3 decodes to too many samples"));
+                }
+                samples.extend_from_slice(decoded_samples);
             }
             Err(SymphoniaError::DecodeError(_)) => continue,
             Err(SymphoniaError::IoError(error)) if error.kind() == ErrorKind::UnexpectedEof => {

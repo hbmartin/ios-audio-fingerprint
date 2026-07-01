@@ -223,7 +223,7 @@ func makeBenchmarkCases() -> [BenchmarkCase] {
             category: "fingerprinting",
             workload: "5s mono Float32 synthetic tone at 11,025 Hz"
         ) {
-            let fingerprinter = StreamingFingerprinter(sampleRate: 11_025, channels: 1)
+            let fingerprinter = try StreamingFingerprinter(sampleRate: 11_025, channels: 1)
             let hashes = fingerprinter.pushSamplesF32(samples: monoFiveSeconds, channels: 1) + fingerprinter.flush()
             return UInt64(hashes.count) &+ UInt64(fingerprinter.durationMs())
         },
@@ -232,7 +232,7 @@ func makeBenchmarkCases() -> [BenchmarkCase] {
             category: "fingerprinting",
             workload: "5s stereo Float32 synthetic tone at 44,100 Hz, downmixed and resampled"
         ) {
-            let fingerprinter = StreamingFingerprinter(sampleRate: 44_100, channels: 2)
+            let fingerprinter = try StreamingFingerprinter(sampleRate: 44_100, channels: 2)
             let hashes = fingerprinter.pushSamplesF32(samples: stereoFiveSeconds, channels: 2) + fingerprinter.flush()
             return UInt64(hashes.count) &+ UInt64(fingerprinter.durationMs())
         },
@@ -253,7 +253,7 @@ func makeBenchmarkCases() -> [BenchmarkCase] {
             category: "fingerprinting",
             workload: "6s stereo Float32 synthetic tone at 44,100 Hz in 44,100-sample chunks"
         ) {
-            let fingerprinter = StreamingWindowedFingerprinter(
+            let fingerprinter = try StreamingWindowedFingerprinter(
                 sampleRate: 44_100,
                 channels: 2,
                 windowDurationMs: 2_000,

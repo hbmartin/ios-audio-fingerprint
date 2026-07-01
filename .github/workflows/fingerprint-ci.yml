@@ -1,0 +1,100 @@
+name: Fingerprint CI
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+      - rust-rewrite
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: fingerprint-ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: Build and test Fingerprint
+    runs-on: macos-26
+    env:
+      CARGO_TERM_COLOR: always
+      FINGERPRINT_REQUIRE_ALL_SLICES: "1"
+      MACOSX_DEPLOYMENT_TARGET: "13.0"
+      IPHONEOS_DEPLOYMENT_TARGET: "13.0"
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+
+      - name: Show toolchain versions
+        run: |
+          xcodebuild -version
+          swift --version
+
+      - name: Install Rust stable and Apple targets
+        run: |
+          rustup toolchain install stable --profile minimal
+          rustup default stable
+          rustup target add \
+            aarch64-apple-darwin \
+            x86_64-apple-darwin \
+            aarch64-apple-ios \
+            aarch64-apple-ios-sim \
+            x86_64-apple-ios
+          cargo --version
+          rustc --version
+
+      - name: Cache Cargo build state
+        uses: actions/cache@v6
+        with:
+          path: |
+            ~/.cargo/git
+            ~/.cargo/registry
+            rust/target
+          key: ${{ runner.os }}-${{ runner.arch }}-cargo-${{ hashFiles('rust/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-${{ runner.arch }}-cargo-
+
+      - name: Test Rust workspace
+        run: cargo test --manifest-path rust/Cargo.toml --workspace --locked
+
+      - name: Build Fingerprint xcframework
+        run: scripts/build-rust-xcframework.sh
+
+      - name: Verify Fingerprint xcframework
+        run: scripts/verify-xcframework.sh Fingerprint.xcframework
+
+      - name: Zip Fingerprint xcframework
+        run: ditto -c -k --keepParent Fingerprint.xcframework Fingerprint.xcframework.zip
+
+      - name: Test Swift package on macOS
+        run: swift test --filter 'FingerprintTests\.FingerprintTests'
+
+      - name: Build Swift package for iOS device
+        run: |
+          xcodebuild \
+            -scheme Fingerprint \
+            -destination 'generic/platform=iOS' \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            build
+
+      - name: Build Swift package for iOS simulator
+        run: |
+          xcodebuild \
+            -scheme Fingerprint \
+            -destination 'generic/platform=iOS Simulator' \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            build
+
+      - name: Upload Fingerprint xcframework
+        uses: actions/upload-artifact@v7
+        with:
+          name: Fingerprint.xcframework
+          path: Fingerprint.xcframework.zip
+          if-no-files-found: error
+          retention-days: 14
