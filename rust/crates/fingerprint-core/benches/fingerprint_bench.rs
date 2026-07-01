@@ -28,6 +28,18 @@ fn signal(sample_rate: u32, seconds: f32) -> Vec<f32> {
         .collect()
 }
 
+fn stereo_signal(sample_rate: u32, seconds: f32) -> Vec<f32> {
+    let left = signal(sample_rate, seconds);
+    let mut samples = Vec::with_capacity(left.len() * 2);
+    for (index, left_sample) in left.into_iter().enumerate() {
+        let t = index as f32 / sample_rate as f32;
+        let right_sample = 0.35 * (2.0 * PI * 330.0 * t).sin();
+        samples.push(left_sample);
+        samples.push(right_sample);
+    }
+    samples
+}
+
 fn bench_samples(c: &mut Criterion) {
     let mut group = c.benchmark_group("fingerprint_samples");
     for seconds in [1.0_f32, 5.0] {
@@ -53,10 +65,11 @@ fn bench_windows(c: &mut Criterion) {
 }
 
 fn bench_streaming(c: &mut Criterion) {
-    let samples = signal(44_100, 10.0);
+    let samples = stereo_signal(44_100, 10.0);
     c.bench_function("streaming_push/44100_stereo_10s", |b| {
+        let mut streaming = StreamingFingerprinter::new(44_100, 2).unwrap();
         b.iter(|| {
-            let mut streaming = StreamingFingerprinter::new(44_100, 2).unwrap();
+            streaming.reset();
             let mut hashes = 0usize;
             for chunk in samples.chunks(8_192) {
                 hashes += streaming

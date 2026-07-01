@@ -27,7 +27,7 @@ cargo +nightly fuzz run fingerprint_from_bytes
 Reproduce a crash artifact:
 
 ```bash
-cargo +nightly fuzz run decode_audio fuzz/artifacts/decode_audio/crash-<hash>
+cargo +nightly fuzz run decode_audio artifacts/decode_audio/crash-<hash>
 ```
 
 `target/`, `corpus/`, `artifacts/`, and `coverage/` are git-ignored.

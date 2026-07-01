@@ -300,6 +300,7 @@ public enum FingerprintError: Error, Equatable, Hashable {
     case UnsupportedFormat(message: String)
     case InvalidInput(message: String)
     case IoError(message: String)
+    case InternalError(message: String)
 }
 
 extension FingerprintError: LocalizedError {
@@ -308,7 +309,8 @@ extension FingerprintError: LocalizedError {
         case let .DecodeError(message),
              let .UnsupportedFormat(message),
              let .InvalidInput(message),
-             let .IoError(message):
+             let .IoError(message),
+             let .InternalError(message):
             return message
         }
     }
@@ -428,6 +430,8 @@ private func takeError(status: UInt32, message: FingerprintFfiBytes) -> Fingerpr
         return .InvalidInput(message: text)
     case 4:
         return .IoError(message: text)
+    case 5:
+        return .InternalError(message: text.isEmpty ? "internal Rust panic" : text)
     default:
         return .InvalidInput(message: text)
     }

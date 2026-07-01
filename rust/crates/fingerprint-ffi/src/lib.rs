@@ -10,6 +10,13 @@ use fingerprint_core::{
     StreamingFingerprinter, StreamingWindowedFingerprinter, WindowedFingerprint,
 };
 
+const STATUS_OK: u32 = 0;
+const STATUS_DECODE_ERROR: u32 = 1;
+const STATUS_UNSUPPORTED_FORMAT: u32 = 2;
+const STATUS_INVALID_INPUT: u32 = 3;
+const STATUS_IO_ERROR: u32 = 4;
+const STATUS_INTERNAL_ERROR: u32 = 5;
+
 #[repr(C)]
 pub struct FingerprintFfiBytes {
     ptr: *mut u8,
@@ -208,7 +215,7 @@ pub unsafe extern "C" fn fingerprint_ffi_fingerprint_data_windowed(
             window_interval_ms,
         ) {
             Ok(windows) => FingerprintFfiWindowedArrayResult {
-                status: 0,
+                status: STATUS_OK,
                 message: FingerprintFfiBytes::empty(),
                 windows: vec_to_windowed_array(windows),
             },
@@ -554,13 +561,12 @@ impl FingerprintFfiFingerprintResult {
 }
 
 impl FingerprintFfiWindowedArrayResult {
-    /// Fallback returned when a panic is caught at the boundary. Status `4`
-    /// (`IoError`) signals an unexpected internal failure; the message is empty
-    /// so the fallback allocates nothing (a forgotten buffer would leak on the
-    /// success path).
+    /// Fallback returned when a panic is caught at the boundary. The message is
+    /// empty so the fallback allocates nothing (a forgotten buffer would leak on
+    /// the success path).
     fn internal_error() -> Self {
         Self {
-            status: 4,
+            status: STATUS_INTERNAL_ERROR,
             message: FingerprintFfiBytes::empty(),
             windows: FingerprintFfiWindowedArray::empty(),
         }
@@ -571,7 +577,7 @@ impl FingerprintFfiHandleResult {
     /// Fallback returned when a panic is caught while constructing a handle.
     fn internal_error() -> Self {
         Self {
-            status: 4,
+            status: STATUS_INTERNAL_ERROR,
             message: FingerprintFfiBytes::empty(),
             handle: ptr::null_mut(),
         }
@@ -592,17 +598,17 @@ fn ffi_guard<R>(fallback: R, body: impl FnOnce() -> R) -> R {
 
 fn error_status(error: &FingerprintError) -> u32 {
     match error {
-        FingerprintError::DecodeError { .. } => 1,
-        FingerprintError::UnsupportedFormat { .. } => 2,
-        FingerprintError::InvalidInput { .. } => 3,
-        FingerprintError::IoError { .. } => 4,
+        FingerprintError::DecodeError { .. } => STATUS_DECODE_ERROR,
+        FingerprintError::UnsupportedFormat { .. } => STATUS_UNSUPPORTED_FORMAT,
+        FingerprintError::InvalidInput { .. } => STATUS_INVALID_INPUT,
+        FingerprintError::IoError { .. } => STATUS_IO_ERROR,
     }
 }
 
 fn mutex_handle_result<T>(result: Result<T, FingerprintError>) -> FingerprintFfiHandleResult {
     match result {
         Ok(value) => FingerprintFfiHandleResult {
-            status: 0,
+            status: STATUS_OK,
             message: FingerprintFfiBytes::empty(),
             handle: Box::into_raw(Box::new(Mutex::new(value))) as *mut c_void,
         },
@@ -773,6 +779,22 @@ mod tests {
     }
 
     #[test]
+    fn internal_error_status_is_distinct_from_io_errors() {
+        assert_eq!(
+            FingerprintFfiHandleResult::internal_error().status,
+            STATUS_INTERNAL_ERROR
+        );
+        assert_eq!(
+            FingerprintFfiWindowedArrayResult::internal_error().status,
+            STATUS_INTERNAL_ERROR
+        );
+        assert_ne!(
+            error_status(&FingerprintError::io("disk")),
+            STATUS_INTERNAL_ERROR
+        );
+    }
+
+    #[test]
     fn lock_recover_recovers_a_poisoned_mutex() {
         let mutex = Mutex::new(5u32);
         let _ = catch_unwind(AssertUnwindSafe(|| {
@@ -817,7 +839,7 @@ mod tests {
         // Poison the handle's mutex directly, then confirm the FFI recovers it
         // instead of degrading to a permanent no-op.
         let result = fingerprint_ffi_streaming_new(TARGET_RATE, 1);
-        assert_eq!(result.status, 0);
+        assert_eq!(result.status, STATUS_OK);
         let handle = result.handle;
 
         let mutex = unsafe { &*(handle as *mut Mutex<StreamingFingerprinter>) };

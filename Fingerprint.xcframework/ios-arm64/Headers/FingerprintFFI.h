@@ -62,6 +62,13 @@ typedef struct FingerprintFfiHandleResult {
 } FingerprintFfiHandleResult;
 
 /*
+ Status codes returned by FingerprintFfiWindowedArrayResult and
+ FingerprintFfiHandleResult:
+ 0 = success, 1 = decode error, 2 = unsupported format, 3 = invalid input,
+ 4 = I/O error, 5 = internal Rust panic caught at the FFI boundary.
+ */
+
+/*
  Returned FingerprintFfiBytes, FingerprintFfiU32Array, FingerprintFfiMatchArray,
  FingerprintFfiWindowedArray, and FingerprintFfiHandleResult.message values own
  their buffers. Release each owned value exactly once with the matching

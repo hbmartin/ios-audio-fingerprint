@@ -90,12 +90,19 @@ proptest! {
     }
 
     /// Resampling produces the floor-based output length documented for the
-    /// linear resampler and never panics for arbitrary source rates.
+    /// linear resampler and never panics for arbitrary source rates. Generated
+    /// cases are bounded to keep extremely low source rates from allocating
+    /// hundreds of MiB of output during the test run.
     #[test]
     fn resample_output_length_is_floor_ratio(
         frames in 1usize..4_096,
         sample_rate in 1u32..192_000,
     ) {
+        let max_output_frames = 65_536u64;
+        prop_assume!(
+            frames as u64 * TARGET_SAMPLE_RATE as u64 / sample_rate as u64 <= max_output_frames
+        );
+
         let samples = vec![0.0f32; frames];
         let output = resample_to_mono(&samples, sample_rate, 1);
         if sample_rate == TARGET_SAMPLE_RATE {
@@ -111,7 +118,8 @@ proptest! {
     /// integer formula.
     #[test]
     fn samples_for_milliseconds_matches_formula(ms in any::<u32>()) {
-        let expected = (ms as u64 * TARGET_SAMPLE_RATE as u64 / 1_000) as usize;
+        let expected =
+            ((ms as u64 * TARGET_SAMPLE_RATE as u64 / 1_000).min(usize::MAX as u64)) as usize;
         prop_assert_eq!(samples_for_milliseconds(ms), expected);
     }
 }
