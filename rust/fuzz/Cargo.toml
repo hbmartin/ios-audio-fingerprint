@@ -1,0 +1,30 @@
+[package]
+name = "fingerprint-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2021"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+fingerprint-core = { path = "../crates/fingerprint-core" }
+
+# Standalone workspace: keep this crate and its lockfile independent of the main
+# workspace so `cargo fuzz` never disturbs the shipped build.
+[workspace]
+
+[[bin]]
+name = "decode_audio"
+path = "fuzz_targets/decode_audio.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "fingerprint_from_bytes"
+path = "fuzz_targets/fingerprint_from_bytes.rs"
+test = false
+doc = false
+bench = false

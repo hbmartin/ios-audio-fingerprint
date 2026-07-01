@@ -3,10 +3,23 @@ members = [
     "crates/fingerprint-core",
     "crates/fingerprint-ffi",
 ]
+# The cargo-fuzz crate needs a nightly toolchain and libFuzzer, so it is kept out
+# of the normal workspace build/test/clippy sweep and run on demand from rust/fuzz.
+exclude = ["fuzz"]
 resolver = "2"
 
 [workspace.package]
 edition = "2021"
 license = "MPL-2.0"
 version = "0.1.0"
+
+# Optimize the shipped Fingerprint.xcframework. scripts/build-rust-xcframework.sh
+# builds fingerprint-ffi with `--release`, so these settings apply to every Apple
+# slice. `panic` is intentionally left at the default `unwind`: the FFI boundary
+# relies on catching unwinds rather than aborting the host app.
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
+strip = true
 
