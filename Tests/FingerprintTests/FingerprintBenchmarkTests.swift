@@ -96,10 +96,14 @@ final class FingerprintBenchmarkTests: XCTestCase {
         var checksum: UInt64 = 0
 
         measure {
-            let fingerprinter = try! StreamingFingerprinter(sampleRate: 11_025, channels: 1)
-            let hashes = fingerprinter.pushSamplesF32(samples: samples, channels: 1) + fingerprinter.flush()
-            checksum &+= UInt64(hashes.count)
-            checksum &+= UInt64(fingerprinter.durationMs())
+            do {
+                let fingerprinter = try StreamingFingerprinter(sampleRate: 11_025, channels: 1)
+                let hashes = fingerprinter.pushSamplesF32(samples: samples, channels: 1) + fingerprinter.flush()
+                checksum &+= UInt64(hashes.count)
+                checksum &+= UInt64(fingerprinter.durationMs())
+            } catch {
+                XCTFail("Failed to create streaming fingerprinter: \(error)")
+            }
         }
 
         XCTAssertGreaterThan(checksum, 0)
@@ -110,10 +114,14 @@ final class FingerprintBenchmarkTests: XCTestCase {
         var checksum: UInt64 = 0
 
         measure {
-            let fingerprinter = try! StreamingFingerprinter(sampleRate: 44_100, channels: 2)
-            let hashes = fingerprinter.pushSamplesF32(samples: samples, channels: 2) + fingerprinter.flush()
-            checksum &+= UInt64(hashes.count)
-            checksum &+= UInt64(fingerprinter.durationMs())
+            do {
+                let fingerprinter = try StreamingFingerprinter(sampleRate: 44_100, channels: 2)
+                let hashes = fingerprinter.pushSamplesF32(samples: samples, channels: 2) + fingerprinter.flush()
+                checksum &+= UInt64(hashes.count)
+                checksum &+= UInt64(fingerprinter.durationMs())
+            } catch {
+                XCTFail("Failed to create streaming fingerprinter: \(error)")
+            }
         }
 
         XCTAssertGreaterThan(checksum, 0)
@@ -125,13 +133,17 @@ final class FingerprintBenchmarkTests: XCTestCase {
         var checksum: UInt64 = 0
 
         measure {
-            let windows = try! Fingerprinter().fingerprintDataWindowed(
-                data: wav,
-                windowDurationMs: 2_000,
-                windowIntervalMs: 500
-            )
-            checksum &+= UInt64(windows.count)
-            checksum &+= UInt64(windows.reduce(0) { $0 + $1.hashes.count })
+            do {
+                let windows = try Fingerprinter().fingerprintDataWindowed(
+                    data: wav,
+                    windowDurationMs: 2_000,
+                    windowIntervalMs: 500
+                )
+                checksum &+= UInt64(windows.count)
+                checksum &+= UInt64(windows.reduce(0) { $0 + $1.hashes.count })
+            } catch {
+                XCTFail("Failed to fingerprint benchmark WAV data: \(error)")
+            }
         }
 
         XCTAssertGreaterThan(checksum, 0)
@@ -143,23 +155,28 @@ final class FingerprintBenchmarkTests: XCTestCase {
         var checksum: UInt64 = 0
 
         measure {
-            let fingerprinter = try! StreamingWindowedFingerprinter(
-                sampleRate: 44_100,
-                channels: 2,
-                windowDurationMs: 2_000,
-                windowIntervalMs: 500
-            )
+            do {
+                let fingerprinter = try StreamingWindowedFingerprinter(
+                    sampleRate: 44_100,
+                    channels: 2,
+                    windowDurationMs: 2_000,
+                    windowIntervalMs: 500
+                )
 
-            var windows: [WindowedFingerprint] = []
-            var offset = 0
-            while offset < samples.count {
-                let end = min(offset + chunkSize, samples.count)
-                windows.append(contentsOf: fingerprinter.pushSamplesF32(samples: Array(samples[offset..<end]), channels: 2))
-                offset = end
+                var windows: [WindowedFingerprint] = []
+                var offset = 0
+                while offset < samples.count {
+                    let end = min(offset + chunkSize, samples.count)
+                    let chunk = Array(samples[offset..<end])
+                    windows.append(contentsOf: fingerprinter.pushSamplesF32(samples: chunk, channels: 2))
+                    offset = end
+                }
+                windows.append(contentsOf: fingerprinter.flush())
+                checksum &+= UInt64(windows.count)
+                checksum &+= UInt64(fingerprinter.durationMs())
+            } catch {
+                XCTFail("Failed to create windowed streaming fingerprinter: \(error)")
             }
-            windows.append(contentsOf: fingerprinter.flush())
-            checksum &+= UInt64(windows.count)
-            checksum &+= UInt64(fingerprinter.durationMs())
         }
 
         XCTAssertGreaterThan(checksum, 0)

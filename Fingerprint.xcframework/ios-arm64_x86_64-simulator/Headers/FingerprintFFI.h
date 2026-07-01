@@ -63,8 +63,9 @@ typedef struct FingerprintFfiHandleResult {
 
 /*
  Returned FingerprintFfiBytes, FingerprintFfiU32Array, FingerprintFfiMatchArray,
- and FingerprintFfiWindowedArray values own their buffers. Release each owned
- value exactly once with the matching fingerprint_ffi_free_* function.
+ FingerprintFfiWindowedArray, and FingerprintFfiHandleResult.message values own
+ their buffers. Release each owned value exactly once with the matching
+ fingerprint_ffi_free_* function.
  */
 void fingerprint_ffi_free_bytes(FingerprintFfiBytes bytes);
 void fingerprint_ffi_free_u32_array(FingerprintFfiU32Array array);
@@ -92,6 +93,16 @@ uint32_t fingerprint_ffi_checkpoint_count(void *handle);
 void fingerprint_ffi_checkpoint_set_drift(void *handle, uint32_t max_drift);
 FingerprintFfiMatchArray fingerprint_ffi_checkpoint_find_top_matches(void *handle, const uint32_t *query_hashes, size_t len, uint32_t max_results);
 
+/*
+ FingerprintFfiHandleResult succeeds with status == 0 and a non-null handle.
+ Callers must check status == 0 before passing handle to APIs such as
+ fingerprint_ffi_streaming_free or fingerprint_ffi_streaming_push_i16. On
+ failure, handle is null and message contains the error text.
+
+ Streaming push_i16 APIs use the channel count captured when the handle was
+ created. Provide interleaved samples that match that layout. Streaming push_f32
+ APIs accept an explicit channels value for each call.
+ */
 FingerprintFfiHandleResult fingerprint_ffi_streaming_new(uint32_t sample_rate, uint16_t channels);
 void fingerprint_ffi_streaming_free(void *handle);
 uint32_t fingerprint_ffi_streaming_duration_ms(void *handle);
