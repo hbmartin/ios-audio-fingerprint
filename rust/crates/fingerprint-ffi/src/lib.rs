@@ -99,10 +99,9 @@ pub extern "C" fn fingerprint_ffi_free_windowed_array(array: FingerprintFfiWindo
     }
     unsafe {
         let items = Vec::from_raw_parts(array.ptr, array.len, array.cap);
-        for item in &items {
-            drop_u32_vec(ptr::read(&item.hashes));
+        for item in items {
+            drop_u32_vec(item.hashes);
         }
-        drop(items);
     }
 }
 

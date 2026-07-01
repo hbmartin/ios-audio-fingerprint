@@ -1,0 +1,45 @@
+name: Rust CI
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+      - rust-rewrite
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: rust-ci-${{ github.ref }}
+  cancel-in-progress: true
+
+defaults:
+  run:
+    working-directory: rust
+
+jobs:
+  lint-and-check:
+    name: Rust lint and check
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+
+      - name: Check formatting
+        run: cargo fmt --all --check
+
+      - name: Run Clippy
+        run: cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
+
+      - name: Test Rust workspace
+        run: cargo test --workspace --all-targets --all-features --locked
+
+      - name: Check Rust workspace
+        run: cargo check --workspace --all-targets --all-features --locked

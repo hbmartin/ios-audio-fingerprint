@@ -119,5 +119,6 @@ pub fn fingerprint_samples(samples: &[f32], duration_ms: u32) -> Fingerprint {
 }
 
 pub(crate) fn duration_ms_for_samples(samples: usize) -> u32 {
-    ((samples as u128 * 1_000) / TARGET_SAMPLE_RATE as u128).min(u32::MAX as u128) as u32
+    ((samples as u128 * 1_000 + (TARGET_SAMPLE_RATE as u128 / 2)) / TARGET_SAMPLE_RATE as u128)
+        .min(u32::MAX as u128) as u32
 }

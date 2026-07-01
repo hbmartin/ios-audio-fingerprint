@@ -124,7 +124,11 @@ open class StreamingFingerprinter: StreamingFingerprinterProtocol {
     }
 
     public init(noPointer _: NoPointer) {
-        raw = try! Self.makeHandle(sampleRate: 11_025, channels: 1)
+        do {
+            raw = try Self.makeHandle(sampleRate: 11_025, channels: 1)
+        } catch {
+            preconditionFailure("Failed to create default StreamingFingerprinter handle: \(error)")
+        }
     }
 
     public init(sampleRate: UInt32, channels: UInt16) throws {
@@ -192,11 +196,30 @@ open class StreamingWindowedFingerprinter: StreamingWindowedFingerprinterProtoco
     }
 
     public init(noPointer _: NoPointer) {
-        raw = try! Self.makeHandle(sampleRate: 11_025, channels: 1, windowDurationMs: 10_000, windowIntervalMs: 2_000)
+        do {
+            raw = try Self.makeHandle(
+                sampleRate: 11_025,
+                channels: 1,
+                windowDurationMs: 10_000,
+                windowIntervalMs: 2_000
+            )
+        } catch {
+            preconditionFailure("Failed to create default StreamingWindowedFingerprinter handle: \(error)")
+        }
     }
 
-    public init(sampleRate: UInt32, channels: UInt16, windowDurationMs: UInt32, windowIntervalMs: UInt32) throws {
-        raw = try Self.makeHandle(sampleRate: sampleRate, channels: channels, windowDurationMs: windowDurationMs, windowIntervalMs: windowIntervalMs)
+    public init(
+        sampleRate: UInt32,
+        channels: UInt16,
+        windowDurationMs: UInt32,
+        windowIntervalMs: UInt32
+    ) throws {
+        raw = try Self.makeHandle(
+            sampleRate: sampleRate,
+            channels: channels,
+            windowDurationMs: windowDurationMs,
+            windowIntervalMs: windowIntervalMs
+        )
     }
 
     deinit {
