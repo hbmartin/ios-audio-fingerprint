@@ -1,0 +1,13 @@
+[package]
+name = "fingerprint-ffi"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[lib]
+name = "fingerprint_ffi"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[dependencies]
+fingerprint-core = { path = "../fingerprint-core" }
+

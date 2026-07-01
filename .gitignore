@@ -49,6 +49,16 @@ artifacts/*
 build/
 reviews_triage/
 triage_decisions.db
+rust/target/
 
 # mise developer-local overrides
 mise.local.toml
+
+codex-analysis/*
+!codex-analysis/benchmarking.md
+!codex-analysis/pure-rust-reimplementation-spec.md
+!codex-analysis/reoxide-macos-run.md
+!codex-analysis/benchmarks/
+!codex-analysis/benchmarks/**
+GhidRust-master/
+*angr*
