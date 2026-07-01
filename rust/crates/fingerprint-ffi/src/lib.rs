@@ -10,7 +10,6 @@ use fingerprint_core::{
 };
 
 #[repr(C)]
-#[derive(Clone, Copy)]
 pub struct FingerprintFfiBytes {
     ptr: *mut u8,
     len: usize,
@@ -18,7 +17,6 @@ pub struct FingerprintFfiBytes {
 }
 
 #[repr(C)]
-#[derive(Clone, Copy)]
 pub struct FingerprintFfiU32Array {
     ptr: *mut u32,
     len: usize,
@@ -40,7 +38,6 @@ pub struct FingerprintFfiMatchResult {
 }
 
 #[repr(C)]
-#[derive(Clone, Copy)]
 pub struct FingerprintFfiMatchArray {
     ptr: *mut FingerprintFfiMatchResult,
     len: usize,
@@ -48,7 +45,6 @@ pub struct FingerprintFfiMatchArray {
 }
 
 #[repr(C)]
-#[derive(Clone, Copy)]
 pub struct FingerprintFfiWindowedFingerprint {
     timestamp_ms: u32,
     duration_ms: u32,
@@ -56,7 +52,6 @@ pub struct FingerprintFfiWindowedFingerprint {
 }
 
 #[repr(C)]
-#[derive(Clone, Copy)]
 pub struct FingerprintFfiWindowedArray {
     ptr: *mut FingerprintFfiWindowedFingerprint,
     len: usize,
@@ -68,6 +63,13 @@ pub struct FingerprintFfiWindowedArrayResult {
     status: u32,
     message: FingerprintFfiBytes,
     windows: FingerprintFfiWindowedArray,
+}
+
+#[repr(C)]
+pub struct FingerprintFfiHandleResult {
+    status: u32,
+    message: FingerprintFfiBytes,
+    handle: *mut c_void,
 }
 
 #[no_mangle]
@@ -98,7 +100,7 @@ pub extern "C" fn fingerprint_ffi_free_windowed_array(array: FingerprintFfiWindo
     unsafe {
         let items = Vec::from_raw_parts(array.ptr, array.len, array.cap);
         for item in &items {
-            drop_u32_vec(item.hashes);
+            drop_u32_vec(ptr::read(&item.hashes));
         }
         drop(items);
     }
@@ -109,8 +111,11 @@ pub extern "C" fn fingerprint_ffi_version() -> FingerprintFfiBytes {
     vec_to_bytes(fingerprint_version().as_bytes().to_vec())
 }
 
+/// # Safety
+///
+/// `hashes` must be null with `len == 0` or valid for `len` `u32` values.
 #[no_mangle]
-pub extern "C" fn fingerprint_ffi_to_bytes(
+pub unsafe extern "C" fn fingerprint_ffi_to_bytes(
     hashes: *const u32,
     len: usize,
     duration_ms: u32,
@@ -119,8 +124,11 @@ pub extern "C" fn fingerprint_ffi_to_bytes(
     vec_to_bytes(fingerprint_to_bytes(hashes, duration_ms))
 }
 
+/// # Safety
+///
+/// `data` must be null with `len == 0` or valid for `len` bytes.
 #[no_mangle]
-pub extern "C" fn fingerprint_ffi_from_bytes(
+pub unsafe extern "C" fn fingerprint_ffi_from_bytes(
     data: *const u8,
     len: usize,
 ) -> FingerprintFfiFingerprintResult {
@@ -139,8 +147,12 @@ pub extern "C" fn fingerprint_ffi_from_bytes(
     }
 }
 
+/// # Safety
+///
+/// `first` and `second` must be null with a zero matching length or valid for
+/// their corresponding lengths.
 #[no_mangle]
-pub extern "C" fn fingerprint_ffi_compare_hashes(
+pub unsafe extern "C" fn fingerprint_ffi_compare_hashes(
     first: *const u32,
     first_len: usize,
     second: *const u32,
@@ -151,8 +163,12 @@ pub extern "C" fn fingerprint_ffi_compare_hashes(
     compare_hashes(first, second)
 }
 
+/// # Safety
+///
+/// `first` and `second` must be null with a zero matching length or valid for
+/// their corresponding lengths.
 #[no_mangle]
-pub extern "C" fn fingerprint_ffi_compare_hashes_with_drift(
+pub unsafe extern "C" fn fingerprint_ffi_compare_hashes_with_drift(
     first: *const u32,
     first_len: usize,
     second: *const u32,
@@ -164,8 +180,11 @@ pub extern "C" fn fingerprint_ffi_compare_hashes_with_drift(
     compare_hashes_with_drift(first, second, max_drift)
 }
 
+/// # Safety
+///
+/// `data` must be null with `len == 0` or valid for `len` bytes.
 #[no_mangle]
-pub extern "C" fn fingerprint_ffi_fingerprint_data_windowed(
+pub unsafe extern "C" fn fingerprint_ffi_fingerprint_data_windowed(
     data: *const u8,
     len: usize,
     window_duration_ms: u32,
@@ -202,8 +221,13 @@ pub extern "C" fn fingerprint_ffi_checkpoint_free(handle: *mut c_void) {
     drop_mutex_handle::<CheckpointMatcher>(handle);
 }
 
+/// # Safety
+///
+/// `handle` must be a live checkpoint handle, and `hashes` must be null with
+/// `len == 0` or valid for `len` `u32` values. The handle must not be freed
+/// while this call is in flight.
 #[no_mangle]
-pub extern "C" fn fingerprint_ffi_checkpoint_add(
+pub unsafe extern "C" fn fingerprint_ffi_checkpoint_add(
     handle: *mut c_void,
     timestamp: f32,
     hashes: *const u32,
@@ -236,8 +260,13 @@ pub extern "C" fn fingerprint_ffi_checkpoint_set_drift(handle: *mut c_void, max_
     });
 }
 
+/// # Safety
+///
+/// `handle` must be a live checkpoint handle, and `query_hashes` must be null
+/// with `len == 0` or valid for `len` `u32` values. The handle must not be
+/// freed while this call is in flight.
 #[no_mangle]
-pub extern "C" fn fingerprint_ffi_checkpoint_find_top_matches(
+pub unsafe extern "C" fn fingerprint_ffi_checkpoint_find_top_matches(
     handle: *mut c_void,
     query_hashes: *const u32,
     len: usize,
@@ -251,11 +280,11 @@ pub extern "C" fn fingerprint_ffi_checkpoint_find_top_matches(
 }
 
 #[no_mangle]
-pub extern "C" fn fingerprint_ffi_streaming_new(sample_rate: u32, channels: u16) -> *mut c_void {
-    match StreamingFingerprinter::new(sample_rate, channels) {
-        Ok(fingerprinter) => Box::into_raw(Box::new(Mutex::new(fingerprinter))) as *mut c_void,
-        Err(_) => ptr::null_mut(),
-    }
+pub extern "C" fn fingerprint_ffi_streaming_new(
+    sample_rate: u32,
+    channels: u16,
+) -> FingerprintFfiHandleResult {
+    mutex_handle_result(StreamingFingerprinter::new(sample_rate, channels))
 }
 
 #[no_mangle]
@@ -270,8 +299,13 @@ pub extern "C" fn fingerprint_ffi_streaming_duration_ms(handle: *mut c_void) -> 
     })
 }
 
+/// # Safety
+///
+/// `handle` must be a live streaming handle, and `samples` must be null with
+/// `len == 0` or valid for `len` `i16` values. The handle must not be freed
+/// while this call is in flight.
 #[no_mangle]
-pub extern "C" fn fingerprint_ffi_streaming_push_i16(
+pub unsafe extern "C" fn fingerprint_ffi_streaming_push_i16(
     handle: *mut c_void,
     samples: *const i16,
     len: usize,
@@ -285,8 +319,13 @@ pub extern "C" fn fingerprint_ffi_streaming_push_i16(
     vec_to_u32_array(hashes)
 }
 
+/// # Safety
+///
+/// `handle` must be a live streaming handle, and `samples` must be null with
+/// `len == 0` or valid for `len` `f32` values. The handle must not be freed
+/// while this call is in flight.
 #[no_mangle]
-pub extern "C" fn fingerprint_ffi_streaming_push_f32(
+pub unsafe extern "C" fn fingerprint_ffi_streaming_push_f32(
     handle: *mut c_void,
     samples: *const f32,
     len: usize,
@@ -326,16 +365,13 @@ pub extern "C" fn fingerprint_ffi_streaming_windowed_new(
     channels: u16,
     window_duration_ms: u32,
     window_interval_ms: u32,
-) -> *mut c_void {
-    match StreamingWindowedFingerprinter::new(
+) -> FingerprintFfiHandleResult {
+    mutex_handle_result(StreamingWindowedFingerprinter::new(
         sample_rate,
         channels,
         window_duration_ms,
         window_interval_ms,
-    ) {
-        Ok(fingerprinter) => Box::into_raw(Box::new(Mutex::new(fingerprinter))) as *mut c_void,
-        Err(_) => ptr::null_mut(),
-    }
+    ))
 }
 
 #[no_mangle]
@@ -352,8 +388,13 @@ pub extern "C" fn fingerprint_ffi_streaming_windowed_duration_ms(handle: *mut c_
     )
 }
 
+/// # Safety
+///
+/// `handle` must be a live windowed streaming handle, and `samples` must be
+/// null with `len == 0` or valid for `len` `i16` values. The handle must not be
+/// freed while this call is in flight.
 #[no_mangle]
-pub extern "C" fn fingerprint_ffi_streaming_windowed_push_i16(
+pub unsafe extern "C" fn fingerprint_ffi_streaming_windowed_push_i16(
     handle: *mut c_void,
     samples: *const i16,
     len: usize,
@@ -367,8 +408,13 @@ pub extern "C" fn fingerprint_ffi_streaming_windowed_push_i16(
     vec_to_windowed_array(windows)
 }
 
+/// # Safety
+///
+/// `handle` must be a live windowed streaming handle, and `samples` must be
+/// null with `len == 0` or valid for `len` `f32` values. The handle must not be
+/// freed while this call is in flight.
 #[no_mangle]
-pub extern "C" fn fingerprint_ffi_streaming_windowed_push_f32(
+pub unsafe extern "C" fn fingerprint_ffi_streaming_windowed_push_f32(
     handle: *mut c_void,
     samples: *const f32,
     len: usize,
@@ -441,6 +487,21 @@ fn error_status(error: &FingerprintError) -> u32 {
         FingerprintError::UnsupportedFormat { .. } => 2,
         FingerprintError::InvalidInput { .. } => 3,
         FingerprintError::IoError { .. } => 4,
+    }
+}
+
+fn mutex_handle_result<T>(result: Result<T, FingerprintError>) -> FingerprintFfiHandleResult {
+    match result {
+        Ok(value) => FingerprintFfiHandleResult {
+            status: 0,
+            message: FingerprintFfiBytes::empty(),
+            handle: Box::into_raw(Box::new(Mutex::new(value))) as *mut c_void,
+        },
+        Err(error) => FingerprintFfiHandleResult {
+            status: error_status(&error),
+            message: vec_to_bytes(error.message().as_bytes().to_vec()),
+            handle: ptr::null_mut(),
+        },
     }
 }
 

@@ -130,7 +130,7 @@ fn one_shot_and_streaming_fingerprinting_produce_hashes() {
     let windows = fingerprint_windows(&samples, 1_500, 500).unwrap();
     assert_eq!(windows.len(), 2);
     assert_eq!(windows[0].timestamp_ms, 0);
-    assert_eq!(windows[1].timestamp_ms, 500);
+    assert_eq!(windows[1].timestamp_ms, 499);
     assert!(!windows[0].hashes.is_empty());
 
     assert!(matches!(

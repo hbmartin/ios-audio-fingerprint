@@ -1,0 +1,199 @@
+name: Fingerprint Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Version tag to create, for example v0.1.0
+        required: true
+        type: string
+      prerelease:
+        description: Mark the GitHub Release as a prerelease
+        required: false
+        default: false
+        type: boolean
+
+permissions:
+  contents: write
+
+concurrency:
+  group: fingerprint-release
+  cancel-in-progress: false
+
+jobs:
+  release:
+    name: Build and publish Fingerprint release
+    runs-on: macos-26
+    env:
+      CARGO_TERM_COLOR: always
+      FINGERPRINT_REQUIRE_ALL_SLICES: "1"
+      MACOSX_DEPLOYMENT_TARGET: "13.0"
+      IPHONEOS_DEPLOYMENT_TARGET: "13.0"
+      VERSION: ${{ inputs.version }}
+      PRERELEASE: ${{ inputs.prerelease }}
+      ASSET_NAME: Fingerprint.xcframework.zip
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Validate release input
+        run: |
+          if [[ ! "${VERSION}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+([-+][0-9A-Za-z.-]+)?$ ]]; then
+            echo "Version must look like v0.1.0; got ${VERSION}" >&2
+            exit 1
+          fi
+
+          if git ls-remote --exit-code --tags origin "refs/tags/${VERSION}" >/dev/null 2>&1; then
+            echo "Tag ${VERSION} already exists" >&2
+            exit 1
+          fi
+
+      - name: Show toolchain versions
+        run: |
+          xcodebuild -version
+          swift --version
+
+      - name: Install Rust stable and Apple targets
+        run: |
+          rustup toolchain install stable --profile minimal
+          rustup default stable
+          rustup target add \
+            aarch64-apple-darwin \
+            x86_64-apple-darwin \
+            aarch64-apple-ios \
+            aarch64-apple-ios-sim \
+            x86_64-apple-ios
+          cargo --version
+          rustc --version
+
+      - name: Cache Cargo build state
+        uses: actions/cache@v6
+        with:
+          path: |
+            ~/.cargo/git
+            ~/.cargo/registry
+            rust/target
+          key: ${{ runner.os }}-${{ runner.arch }}-cargo-${{ hashFiles('rust/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-${{ runner.arch }}-cargo-
+
+      - name: Test Rust workspace
+        run: cargo test --manifest-path rust/Cargo.toml --workspace --locked
+
+      - name: Build Fingerprint xcframework
+        run: scripts/build-rust-xcframework.sh
+
+      - name: Verify Fingerprint xcframework
+        run: scripts/verify-xcframework.sh Fingerprint.xcframework
+
+      - name: Zip Fingerprint xcframework
+        run: ditto -c -k --keepParent Fingerprint.xcframework "${ASSET_NAME}"
+
+      - name: Test Swift package on macOS
+        run: swift test --filter 'FingerprintTests\.FingerprintTests'
+
+      - name: Build Swift package for iOS device
+        run: |
+          xcodebuild \
+            -scheme Fingerprint \
+            -destination 'generic/platform=iOS' \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            build
+
+      - name: Build Swift package for iOS simulator
+        run: |
+          xcodebuild \
+            -scheme Fingerprint \
+            -destination 'generic/platform=iOS Simulator' \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            build
+
+      - name: Compute SwiftPM checksum
+        run: |
+          checksum="$(swift package compute-checksum "${ASSET_NAME}")"
+          binary_url="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/releases/download/${VERSION}/${ASSET_NAME}"
+          {
+            echo "FINGERPRINT_BINARY_CHECKSUM=${checksum}"
+            echo "FINGERPRINT_BINARY_URL=${binary_url}"
+          } >> "${GITHUB_ENV}"
+
+      - name: Patch Package.swift for release tag
+        run: |
+          ruby <<'RUBY'
+          package_path = "Package.swift"
+          url = ENV.fetch("FINGERPRINT_BINARY_URL")
+          checksum = ENV.fetch("FINGERPRINT_BINARY_CHECKSUM")
+
+          text = File.read(package_path)
+          replacement = [
+            "        .binaryTarget(",
+            "            name: \"FingerprintFFI\",",
+            "            url: \"#{url}\",",
+            "            checksum: \"#{checksum}\"",
+            "        )",
+          ].join("\n")
+
+          updated = text.sub(
+            /        \.binaryTarget\(\n            name: "FingerprintFFI",\n            path: "Fingerprint\.xcframework"\n        \)/,
+            replacement
+          )
+
+          abort "Could not find local FingerprintFFI binaryTarget in Package.swift" if updated == text
+
+          File.write(package_path, updated)
+          RUBY
+
+          git diff -- Package.swift
+
+      - name: Create release tag commit
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add Package.swift
+          git commit -m "Release ${VERSION}"
+          git tag -a "${VERSION}" -m "Release ${VERSION}"
+          git push origin "refs/tags/${VERSION}"
+
+      - name: Create GitHub Release and upload asset
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          args=(
+            release create "${VERSION}"
+            "${ASSET_NAME}#${ASSET_NAME}"
+            --title "${VERSION}"
+            --notes "Fingerprint SwiftPM binary release ${VERSION}."
+          )
+
+          if [[ "${PRERELEASE}" == "true" ]]; then
+            args+=(--prerelease)
+          fi
+
+          gh "${args[@]}"
+
+      - name: Wait for release asset
+        run: |
+          for attempt in {1..6}; do
+            if curl -fsSL -o /dev/null "${FINGERPRINT_BINARY_URL}"; then
+              exit 0
+            fi
+            echo "Release asset is not available yet; retry ${attempt}/6"
+            sleep 10
+          done
+
+          echo "Release asset did not become available: ${FINGERPRINT_BINARY_URL}" >&2
+          exit 1
+
+      - name: Validate release tag consumes uploaded binary
+        run: |
+          temp_dir="$(mktemp -d)"
+          git clone --depth 1 --branch "${VERSION}" "${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}.git" "${temp_dir}/repo"
+          cd "${temp_dir}/repo"
+          swift package reset
+          swift build
+          swift test --filter 'FingerprintTests\.FingerprintTests'

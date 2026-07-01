@@ -55,6 +55,17 @@ typedef struct FingerprintFfiWindowedArrayResult {
     FingerprintFfiWindowedArray windows;
 } FingerprintFfiWindowedArrayResult;
 
+typedef struct FingerprintFfiHandleResult {
+    uint32_t status;
+    FingerprintFfiBytes message;
+    void *handle;
+} FingerprintFfiHandleResult;
+
+/*
+ Returned FingerprintFfiBytes, FingerprintFfiU32Array, FingerprintFfiMatchArray,
+ and FingerprintFfiWindowedArray values own their buffers. Release each owned
+ value exactly once with the matching fingerprint_ffi_free_* function.
+ */
 void fingerprint_ffi_free_bytes(FingerprintFfiBytes bytes);
 void fingerprint_ffi_free_u32_array(FingerprintFfiU32Array array);
 void fingerprint_ffi_free_match_array(FingerprintFfiMatchArray array);
@@ -67,6 +78,12 @@ float fingerprint_ffi_compare_hashes(const uint32_t *first, size_t first_len, co
 float fingerprint_ffi_compare_hashes_with_drift(const uint32_t *first, size_t first_len, const uint32_t *second, size_t second_len, uint32_t max_drift);
 FingerprintFfiWindowedArrayResult fingerprint_ffi_fingerprint_data_windowed(const uint8_t *data, size_t len, uint32_t window_duration_ms, uint32_t window_interval_ms);
 
+/*
+ Opaque handles returned by fingerprint_ffi_*_new are owned by the caller and
+ must be released exactly once with the matching fingerprint_ffi_*_free
+ function. Do not call a handle's free function while another call using that
+ same handle is still in flight.
+ */
 void *fingerprint_ffi_checkpoint_new(uint32_t max_drift);
 void fingerprint_ffi_checkpoint_free(void *handle);
 void fingerprint_ffi_checkpoint_add(void *handle, float timestamp, const uint32_t *hashes, size_t len, float duration);
@@ -75,7 +92,7 @@ uint32_t fingerprint_ffi_checkpoint_count(void *handle);
 void fingerprint_ffi_checkpoint_set_drift(void *handle, uint32_t max_drift);
 FingerprintFfiMatchArray fingerprint_ffi_checkpoint_find_top_matches(void *handle, const uint32_t *query_hashes, size_t len, uint32_t max_results);
 
-void *fingerprint_ffi_streaming_new(uint32_t sample_rate, uint16_t channels);
+FingerprintFfiHandleResult fingerprint_ffi_streaming_new(uint32_t sample_rate, uint16_t channels);
 void fingerprint_ffi_streaming_free(void *handle);
 uint32_t fingerprint_ffi_streaming_duration_ms(void *handle);
 FingerprintFfiU32Array fingerprint_ffi_streaming_push_i16(void *handle, const int16_t *samples, size_t len);
@@ -83,7 +100,7 @@ FingerprintFfiU32Array fingerprint_ffi_streaming_push_f32(void *handle, const fl
 FingerprintFfiU32Array fingerprint_ffi_streaming_flush(void *handle);
 void fingerprint_ffi_streaming_reset(void *handle);
 
-void *fingerprint_ffi_streaming_windowed_new(uint32_t sample_rate, uint16_t channels, uint32_t window_duration_ms, uint32_t window_interval_ms);
+FingerprintFfiHandleResult fingerprint_ffi_streaming_windowed_new(uint32_t sample_rate, uint16_t channels, uint32_t window_duration_ms, uint32_t window_interval_ms);
 void fingerprint_ffi_streaming_windowed_free(void *handle);
 uint32_t fingerprint_ffi_streaming_windowed_duration_ms(void *handle);
 FingerprintFfiWindowedArray fingerprint_ffi_streaming_windowed_push_i16(void *handle, const int16_t *samples, size_t len);
@@ -96,4 +113,3 @@ void fingerprint_ffi_streaming_windowed_reset(void *handle);
 #endif
 
 #endif
-

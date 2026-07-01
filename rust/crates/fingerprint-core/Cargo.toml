@@ -12,5 +12,3 @@ thiserror = "2"
 
 [dev-dependencies]
 assert_approx_eq = "1"
-proptest = "1"
-

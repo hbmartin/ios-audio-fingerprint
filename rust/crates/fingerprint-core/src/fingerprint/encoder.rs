@@ -31,8 +31,11 @@ pub fn compute_hash(frames: &[[f32; PITCH_CLASSES]]) -> u32 {
     let mut bit = 0u32;
     for offset in 1..frames.len().min(4) {
         let pitch_limit = if offset == 3 { 8 } else { PITCH_CLASSES };
-        for pitch in 0..pitch_limit {
-            if frames[offset][pitch] - frames[offset - 1][pitch] > HASH_THRESHOLD {
+        for (current, previous) in frames[offset][..pitch_limit]
+            .iter()
+            .zip(frames[offset - 1][..pitch_limit].iter())
+        {
+            if *current - *previous > HASH_THRESHOLD {
                 hash |= 1u32 << bit;
             }
             bit += 1;

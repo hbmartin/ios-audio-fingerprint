@@ -46,13 +46,23 @@ final class FingerprintTests: XCTestCase {
     }
 
     func testStreamingProducesHashesAndTracksDuration() {
-        let fingerprinter = StreamingFingerprinter(sampleRate: 11_025, channels: 1)
+        let fingerprinter = try! StreamingFingerprinter(sampleRate: 11_025, channels: 1)
         let samples = sineWave(sampleRate: 11_025, seconds: 2.0, frequency: 440)
 
         let hashes = fingerprinter.pushSamplesF32(samples: samples, channels: 1) + fingerprinter.flush()
 
         XCTAssertGreaterThan(hashes.count, 0)
         XCTAssertEqual(fingerprinter.durationMs(), 2_000)
+    }
+
+    func testStreamingInitializersThrowInvalidInputs() {
+        XCTAssertThrowsError(try StreamingFingerprinter(sampleRate: 0, channels: 1)) { error in
+            XCTAssertEqual(error as? FingerprintError, .InvalidInput(message: "sample rate must be greater than 0"))
+        }
+
+        XCTAssertThrowsError(try StreamingWindowedFingerprinter(sampleRate: 11_025, channels: 1, windowDurationMs: 1, windowIntervalMs: 500)) { error in
+            XCTAssertEqual(error as? FingerprintError, .InvalidInput(message: "Window too short: 11 samples, need at least 4096"))
+        }
     }
 
     func testWindowedWavFingerprinting() throws {
@@ -66,7 +76,7 @@ final class FingerprintTests: XCTestCase {
 
         XCTAssertEqual(windows.count, 2)
         XCTAssertEqual(windows[0].timestampMs, 0)
-        XCTAssertEqual(windows[1].timestampMs, 500)
+        XCTAssertEqual(windows[1].timestampMs, 499)
         XCTAssertFalse(windows[0].hashes.isEmpty)
     }
 

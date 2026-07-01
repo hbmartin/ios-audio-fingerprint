@@ -96,7 +96,7 @@ final class FingerprintBenchmarkTests: XCTestCase {
         var checksum: UInt64 = 0
 
         measure {
-            let fingerprinter = StreamingFingerprinter(sampleRate: 11_025, channels: 1)
+            let fingerprinter = try! StreamingFingerprinter(sampleRate: 11_025, channels: 1)
             let hashes = fingerprinter.pushSamplesF32(samples: samples, channels: 1) + fingerprinter.flush()
             checksum &+= UInt64(hashes.count)
             checksum &+= UInt64(fingerprinter.durationMs())
@@ -110,7 +110,7 @@ final class FingerprintBenchmarkTests: XCTestCase {
         var checksum: UInt64 = 0
 
         measure {
-            let fingerprinter = StreamingFingerprinter(sampleRate: 44_100, channels: 2)
+            let fingerprinter = try! StreamingFingerprinter(sampleRate: 44_100, channels: 2)
             let hashes = fingerprinter.pushSamplesF32(samples: samples, channels: 2) + fingerprinter.flush()
             checksum &+= UInt64(hashes.count)
             checksum &+= UInt64(fingerprinter.durationMs())
@@ -143,7 +143,7 @@ final class FingerprintBenchmarkTests: XCTestCase {
         var checksum: UInt64 = 0
 
         measure {
-            let fingerprinter = StreamingWindowedFingerprinter(
+            let fingerprinter = try! StreamingWindowedFingerprinter(
                 sampleRate: 44_100,
                 channels: 2,
                 windowDurationMs: 2_000,

@@ -7,7 +7,8 @@ use crate::error::FingerprintError;
 use crate::fingerprint::encoder::compute_hash;
 use crate::fingerprint::fft::FftProcessor;
 use crate::fingerprint::{
-    fingerprint_samples, FRAME_SIZE, HASH_FRAME_COUNT, HASH_STRIDE_FRAMES, HOP_SIZE, PITCH_CLASSES,
+    duration_ms_for_samples, fingerprint_samples, FRAME_SIZE, HASH_FRAME_COUNT, HASH_STRIDE_FRAMES,
+    HOP_SIZE, PITCH_CLASSES,
 };
 
 use super::WindowedFingerprint;
@@ -233,8 +234,4 @@ impl StreamingWindowedFingerprinter {
         }
         self.buffer_start_sample += discard;
     }
-}
-
-fn duration_ms_for_samples(samples: usize) -> u32 {
-    ((samples as u128 * 1_000) / TARGET_SAMPLE_RATE as u128).min(u32::MAX as u128) as u32
 }

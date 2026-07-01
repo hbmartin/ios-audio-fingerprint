@@ -90,16 +90,14 @@ pub fn fingerprint_windows(
 
     let mut windows = Vec::new();
     let mut start = 0usize;
-    let mut emitted = 0u64;
     while start + window_samples <= samples.len() {
         let window = &samples[start..start + window_samples];
         let fingerprint = fingerprint_samples(window, window_duration_ms);
         windows.push(WindowedFingerprint {
-            timestamp_ms: (emitted * window_interval_ms as u64).min(u32::MAX as u64) as u32,
+            timestamp_ms: duration_ms_for_samples(start),
             duration_ms: window_duration_ms,
             hashes: fingerprint.hashes,
         });
-        emitted += 1;
         start += interval_samples;
     }
     Ok(windows)
@@ -118,4 +116,8 @@ pub fn fingerprint_samples(samples: &[f32], duration_ms: u32) -> Fingerprint {
         hashes: encode_chroma_frames(&chroma_frames),
         duration_ms,
     }
+}
+
+pub(crate) fn duration_ms_for_samples(samples: usize) -> u32 {
+    ((samples as u128 * 1_000) / TARGET_SAMPLE_RATE as u128).min(u32::MAX as u128) as u32
 }

@@ -16,8 +16,8 @@ open class CheckpointMatcher: CheckpointMatcherProtocol {
 
     private var raw: UnsafeMutableRawPointer?
 
-    public required init(unsafeFromRawPointer _: UnsafeMutableRawPointer) {
-        raw = fingerprint_ffi_checkpoint_new(0)
+    public required init(unsafeFromRawPointer pointer: UnsafeMutableRawPointer) {
+        raw = pointer
     }
 
     public init(noPointer _: NoPointer) {
@@ -119,16 +119,16 @@ open class StreamingFingerprinter: StreamingFingerprinterProtocol {
 
     private var raw: UnsafeMutableRawPointer?
 
-    public required init(unsafeFromRawPointer _: UnsafeMutableRawPointer) {
-        raw = fingerprint_ffi_streaming_new(11_025, 1)
+    public required init(unsafeFromRawPointer pointer: UnsafeMutableRawPointer) {
+        raw = pointer
     }
 
     public init(noPointer _: NoPointer) {
-        raw = fingerprint_ffi_streaming_new(11_025, 1)
+        raw = try! Self.makeHandle(sampleRate: 11_025, channels: 1)
     }
 
-    public init(sampleRate: UInt32, channels: UInt16) {
-        raw = fingerprint_ffi_streaming_new(sampleRate, channels)
+    public init(sampleRate: UInt32, channels: UInt16) throws {
+        raw = try Self.makeHandle(sampleRate: sampleRate, channels: channels)
     }
 
     deinit {
@@ -166,6 +166,10 @@ open class StreamingFingerprinter: StreamingFingerprinterProtocol {
     open func reset() {
         fingerprint_ffi_streaming_reset(raw)
     }
+
+    private static func makeHandle(sampleRate: UInt32, channels: UInt16) throws -> UnsafeMutableRawPointer {
+        try takeHandleResult(fingerprint_ffi_streaming_new(sampleRate, channels))
+    }
 }
 
 public protocol StreamingWindowedFingerprinterProtocol: AnyObject {
@@ -183,16 +187,16 @@ open class StreamingWindowedFingerprinter: StreamingWindowedFingerprinterProtoco
 
     private var raw: UnsafeMutableRawPointer?
 
-    public required init(unsafeFromRawPointer _: UnsafeMutableRawPointer) {
-        raw = fingerprint_ffi_streaming_windowed_new(11_025, 1, 10_000, 2_000)
+    public required init(unsafeFromRawPointer pointer: UnsafeMutableRawPointer) {
+        raw = pointer
     }
 
     public init(noPointer _: NoPointer) {
-        raw = fingerprint_ffi_streaming_windowed_new(11_025, 1, 10_000, 2_000)
+        raw = try! Self.makeHandle(sampleRate: 11_025, channels: 1, windowDurationMs: 10_000, windowIntervalMs: 2_000)
     }
 
-    public init(sampleRate: UInt32, channels: UInt16, windowDurationMs: UInt32, windowIntervalMs: UInt32) {
-        raw = fingerprint_ffi_streaming_windowed_new(sampleRate, channels, windowDurationMs, windowIntervalMs)
+    public init(sampleRate: UInt32, channels: UInt16, windowDurationMs: UInt32, windowIntervalMs: UInt32) throws {
+        raw = try Self.makeHandle(sampleRate: sampleRate, channels: channels, windowDurationMs: windowDurationMs, windowIntervalMs: windowIntervalMs)
     }
 
     deinit {
@@ -229,6 +233,10 @@ open class StreamingWindowedFingerprinter: StreamingWindowedFingerprinterProtoco
 
     open func reset() {
         fingerprint_ffi_streaming_windowed_reset(raw)
+    }
+
+    private static func makeHandle(sampleRate: UInt32, channels: UInt16, windowDurationMs: UInt32, windowIntervalMs: UInt32) throws -> UnsafeMutableRawPointer {
+        try takeHandleResult(fingerprint_ffi_streaming_windowed_new(sampleRate, channels, windowDurationMs, windowIntervalMs))
     }
 }
 
@@ -374,6 +382,18 @@ private func takeWindowedArray(_ array: FingerprintFfiWindowedArray) -> [Windowe
     }
 }
 
+private func takeHandleResult(_ result: FingerprintFfiHandleResult) throws -> UnsafeMutableRawPointer {
+    if result.status != 0 {
+        throw takeError(status: result.status, message: result.message)
+    }
+
+    defer { fingerprint_ffi_free_bytes(result.message) }
+    guard let handle = result.handle else {
+        throw FingerprintError.InvalidInput(message: "constructor returned a null handle")
+    }
+    return handle
+}
+
 private func takeError(status: UInt32, message: FingerprintFfiBytes) -> FingerprintError {
     let text = takeString(message)
     switch status {
@@ -389,4 +409,3 @@ private func takeError(status: UInt32, message: FingerprintFfiBytes) -> Fingerpr
         return .InvalidInput(message: text)
     }
 }
-
