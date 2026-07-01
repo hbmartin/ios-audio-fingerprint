@@ -50,8 +50,8 @@ impl ChromaMap {
 
     pub fn chroma(&self, magnitudes: &[f32]) -> [f32; PITCH_CLASSES] {
         let mut bins = [0.0; PITCH_CLASSES];
-        for (index, magnitude) in magnitudes.iter().copied().enumerate() {
-            if let Some(Some(pitch)) = self.pitch_by_bin.get(index) {
+        for (magnitude, pitch) in magnitudes.iter().copied().zip(&self.pitch_by_bin) {
+            if let Some(pitch) = pitch {
                 bins[*pitch] += magnitude * magnitude;
             }
         }

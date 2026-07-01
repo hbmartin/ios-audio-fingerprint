@@ -88,10 +88,17 @@ impl StreamingFingerprinter {
 
     fn process_buffer(&mut self) {
         while self.buffer.len() >= FRAME_SIZE {
-            // Read the frame straight from the (linearized) ring buffer instead of
-            // copying it into a fresh Vec each hop.
-            let frame = self.buffer.make_contiguous();
-            let chroma = self.fft.process_to_chroma(&frame[..FRAME_SIZE]);
+            let (first, second) = self.buffer.as_slices();
+            let mut frame = [0.0f32; FRAME_SIZE];
+            if first.len() >= FRAME_SIZE {
+                frame.copy_from_slice(&first[..FRAME_SIZE]);
+            } else {
+                frame[..first.len()].copy_from_slice(first);
+                let remaining = FRAME_SIZE - first.len();
+                frame[first.len()..].copy_from_slice(&second[..remaining]);
+            }
+
+            let chroma = self.fft.process_to_chroma(&frame);
             self.chroma_frames.push_back(chroma);
             for _ in 0..HOP_SIZE.min(self.buffer.len()) {
                 self.buffer.pop_front();
@@ -102,10 +109,17 @@ impl StreamingFingerprinter {
     fn emit_hashes(&mut self) -> Vec<u32> {
         let mut hashes = Vec::new();
         while self.chroma_frames.len() >= HASH_FRAME_COUNT {
-            // Hash directly over the linearized chroma queue rather than copying
-            // the frame window into a fresh Vec each hash.
-            let frames = self.chroma_frames.make_contiguous();
-            hashes.push(compute_hash(&frames[..HASH_FRAME_COUNT]));
+            let (first, second) = self.chroma_frames.as_slices();
+            let mut frames = [[0.0f32; PITCH_CLASSES]; HASH_FRAME_COUNT];
+            if first.len() >= HASH_FRAME_COUNT {
+                frames.copy_from_slice(&first[..HASH_FRAME_COUNT]);
+            } else {
+                frames[..first.len()].copy_from_slice(first);
+                let remaining = HASH_FRAME_COUNT - first.len();
+                frames[first.len()..].copy_from_slice(&second[..remaining]);
+            }
+
+            hashes.push(compute_hash(&frames));
             for _ in 0..HASH_STRIDE_FRAMES.min(self.chroma_frames.len()) {
                 self.chroma_frames.pop_front();
             }
@@ -200,22 +214,24 @@ impl StreamingWindowedFingerprinter {
             .buffer_start_sample
             .saturating_add(self.samples_at_target_rate.len());
 
-        while self.next_window_start.saturating_add(window_samples) <= available_end {
-            let relative_start = self.next_window_start - self.buffer_start_sample;
-            let timestamp_ms = duration_ms_for_samples(self.next_window_start);
-            // Slice the window directly out of the queue (no per-window copy) and
-            // reuse the shared FFT plan across every window.
+        let mut next_window_start = self.next_window_start;
+        if next_window_start.saturating_add(window_samples) <= available_end {
             let contiguous = self.samples_at_target_rate.make_contiguous();
-            let window = &contiguous[relative_start..relative_start + window_samples];
-            let hashes =
-                fingerprint_samples_with(&mut self.fft, window, self.window_duration_ms).hashes;
-            windows.push(WindowedFingerprint {
-                timestamp_ms,
-                duration_ms: self.window_duration_ms,
-                hashes,
-            });
-            self.next_window_start = self.next_window_start.saturating_add(interval_samples);
+            while next_window_start.saturating_add(window_samples) <= available_end {
+                let relative_start = next_window_start - self.buffer_start_sample;
+                let timestamp_ms = duration_ms_for_samples(next_window_start);
+                let window = &contiguous[relative_start..relative_start + window_samples];
+                let hashes =
+                    fingerprint_samples_with(&mut self.fft, window, self.window_duration_ms).hashes;
+                windows.push(WindowedFingerprint {
+                    timestamp_ms,
+                    duration_ms: self.window_duration_ms,
+                    hashes,
+                });
+                next_window_start = next_window_start.saturating_add(interval_samples);
+            }
         }
+        self.next_window_start = next_window_start;
 
         self.compact();
         windows

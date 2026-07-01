@@ -1,4 +1,18 @@
 rules:
+  - id: rust-audio-ffi-transmute
+    languages:
+      - rust
+    severity: ERROR
+    message: "Do not use std::mem::transmute in audio decoder or FFI boundary code; use an owned value or explicit safe conversion."
+    paths:
+      include:
+        - /rust/crates/fingerprint-core/src/audio/decoder.rs
+        - /rust/crates/fingerprint-ffi/src/lib.rs
+    patterns:
+      - pattern-either:
+          - pattern: std::mem::transmute(...)
+          - pattern: transmute(...)
+
   - id: github-actions-unpinned-action-reference
     languages:
       - generic
