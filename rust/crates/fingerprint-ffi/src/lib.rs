@@ -1,4 +1,5 @@
 use std::ffi::c_void;
+use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::ptr;
 use std::slice;
 use std::sync::Mutex;
@@ -74,40 +75,46 @@ pub struct FingerprintFfiHandleResult {
 
 #[no_mangle]
 pub extern "C" fn fingerprint_ffi_free_bytes(bytes: FingerprintFfiBytes) {
-    drop_u8_vec(bytes);
+    ffi_guard((), || drop_u8_vec(bytes));
 }
 
 #[no_mangle]
 pub extern "C" fn fingerprint_ffi_free_u32_array(array: FingerprintFfiU32Array) {
-    drop_u32_vec(array);
+    ffi_guard((), || drop_u32_vec(array));
 }
 
 #[no_mangle]
 pub extern "C" fn fingerprint_ffi_free_match_array(array: FingerprintFfiMatchArray) {
-    if array.ptr.is_null() {
-        return;
-    }
-    unsafe {
-        drop(Vec::from_raw_parts(array.ptr, array.len, array.cap));
-    }
+    ffi_guard((), || {
+        if array.ptr.is_null() {
+            return;
+        }
+        unsafe {
+            drop(Vec::from_raw_parts(array.ptr, array.len, array.cap));
+        }
+    });
 }
 
 #[no_mangle]
 pub extern "C" fn fingerprint_ffi_free_windowed_array(array: FingerprintFfiWindowedArray) {
-    if array.ptr.is_null() {
-        return;
-    }
-    unsafe {
-        let items = Vec::from_raw_parts(array.ptr, array.len, array.cap);
-        for item in items {
-            drop_u32_vec(item.hashes);
+    ffi_guard((), || {
+        if array.ptr.is_null() {
+            return;
         }
-    }
+        unsafe {
+            let items = Vec::from_raw_parts(array.ptr, array.len, array.cap);
+            for item in items {
+                drop_u32_vec(item.hashes);
+            }
+        }
+    });
 }
 
 #[no_mangle]
 pub extern "C" fn fingerprint_ffi_version() -> FingerprintFfiBytes {
-    vec_to_bytes(fingerprint_version().as_bytes().to_vec())
+    ffi_guard(FingerprintFfiBytes::empty(), || {
+        vec_to_bytes(fingerprint_version().as_bytes().to_vec())
+    })
 }
 
 /// # Safety
@@ -119,8 +126,10 @@ pub unsafe extern "C" fn fingerprint_ffi_to_bytes(
     len: usize,
     duration_ms: u32,
 ) -> FingerprintFfiBytes {
-    let hashes = unsafe { u32_slice(hashes, len) };
-    vec_to_bytes(fingerprint_to_bytes(hashes, duration_ms))
+    ffi_guard(FingerprintFfiBytes::empty(), || {
+        let hashes = unsafe { u32_slice(hashes, len) };
+        vec_to_bytes(fingerprint_to_bytes(hashes, duration_ms))
+    })
 }
 
 /// # Safety
@@ -131,19 +140,17 @@ pub unsafe extern "C" fn fingerprint_ffi_from_bytes(
     data: *const u8,
     len: usize,
 ) -> FingerprintFfiFingerprintResult {
-    let data = unsafe { u8_slice(data, len) };
-    match fingerprint_from_bytes(data) {
-        Some(fingerprint) => FingerprintFfiFingerprintResult {
-            found: 1,
-            duration_ms: fingerprint.duration_ms,
-            hashes: vec_to_u32_array(fingerprint.hashes),
-        },
-        None => FingerprintFfiFingerprintResult {
-            found: 0,
-            duration_ms: 0,
-            hashes: FingerprintFfiU32Array::empty(),
-        },
-    }
+    ffi_guard(FingerprintFfiFingerprintResult::not_found(), || {
+        let data = unsafe { u8_slice(data, len) };
+        match fingerprint_from_bytes(data) {
+            Some(fingerprint) => FingerprintFfiFingerprintResult {
+                found: 1,
+                duration_ms: fingerprint.duration_ms,
+                hashes: vec_to_u32_array(fingerprint.hashes),
+            },
+            None => FingerprintFfiFingerprintResult::not_found(),
+        }
+    })
 }
 
 /// # Safety
@@ -157,9 +164,11 @@ pub unsafe extern "C" fn fingerprint_ffi_compare_hashes(
     second: *const u32,
     second_len: usize,
 ) -> f32 {
-    let first = unsafe { u32_slice(first, first_len) };
-    let second = unsafe { u32_slice(second, second_len) };
-    compare_hashes(first, second)
+    ffi_guard(0.0, || {
+        let first = unsafe { u32_slice(first, first_len) };
+        let second = unsafe { u32_slice(second, second_len) };
+        compare_hashes(first, second)
+    })
 }
 
 /// # Safety
@@ -174,9 +183,11 @@ pub unsafe extern "C" fn fingerprint_ffi_compare_hashes_with_drift(
     second_len: usize,
     max_drift: u32,
 ) -> f32 {
-    let first = unsafe { u32_slice(first, first_len) };
-    let second = unsafe { u32_slice(second, second_len) };
-    compare_hashes_with_drift(first, second, max_drift)
+    ffi_guard(0.0, || {
+        let first = unsafe { u32_slice(first, first_len) };
+        let second = unsafe { u32_slice(second, second_len) };
+        compare_hashes_with_drift(first, second, max_drift)
+    })
 }
 
 /// # Safety
@@ -189,35 +200,39 @@ pub unsafe extern "C" fn fingerprint_ffi_fingerprint_data_windowed(
     window_duration_ms: u32,
     window_interval_ms: u32,
 ) -> FingerprintFfiWindowedArrayResult {
-    let data = unsafe { u8_slice(data, len) };
-    match Fingerprinter::new().fingerprint_data_windowed(
-        data,
-        window_duration_ms,
-        window_interval_ms,
-    ) {
-        Ok(windows) => FingerprintFfiWindowedArrayResult {
-            status: 0,
-            message: FingerprintFfiBytes::empty(),
-            windows: vec_to_windowed_array(windows),
-        },
-        Err(error) => FingerprintFfiWindowedArrayResult {
-            status: error_status(&error),
-            message: vec_to_bytes(error.message().as_bytes().to_vec()),
-            windows: FingerprintFfiWindowedArray::empty(),
-        },
-    }
+    ffi_guard(FingerprintFfiWindowedArrayResult::internal_error(), || {
+        let data = unsafe { u8_slice(data, len) };
+        match Fingerprinter::new().fingerprint_data_windowed(
+            data,
+            window_duration_ms,
+            window_interval_ms,
+        ) {
+            Ok(windows) => FingerprintFfiWindowedArrayResult {
+                status: 0,
+                message: FingerprintFfiBytes::empty(),
+                windows: vec_to_windowed_array(windows),
+            },
+            Err(error) => FingerprintFfiWindowedArrayResult {
+                status: error_status(&error),
+                message: vec_to_bytes(error.message().as_bytes().to_vec()),
+                windows: FingerprintFfiWindowedArray::empty(),
+            },
+        }
+    })
 }
 
 #[no_mangle]
 pub extern "C" fn fingerprint_ffi_checkpoint_new(max_drift: u32) -> *mut c_void {
-    Box::into_raw(Box::new(Mutex::new(CheckpointMatcher::with_drift(
-        max_drift,
-    )))) as *mut c_void
+    ffi_guard(ptr::null_mut(), || {
+        Box::into_raw(Box::new(Mutex::new(CheckpointMatcher::with_drift(
+            max_drift,
+        )))) as *mut c_void
+    })
 }
 
 #[no_mangle]
 pub extern "C" fn fingerprint_ffi_checkpoint_free(handle: *mut c_void) {
-    drop_mutex_handle::<CheckpointMatcher>(handle);
+    ffi_guard((), || drop_mutex_handle::<CheckpointMatcher>(handle));
 }
 
 /// # Safety
@@ -233,29 +248,37 @@ pub unsafe extern "C" fn fingerprint_ffi_checkpoint_add(
     len: usize,
     duration: f32,
 ) {
-    with_handle(handle, |matcher: &mut CheckpointMatcher| {
-        matcher.add(
-            timestamp,
-            unsafe { u32_slice(hashes, len) }.to_vec(),
-            duration,
-        );
+    ffi_guard((), || {
+        with_handle(handle, |matcher: &mut CheckpointMatcher| {
+            matcher.add(
+                timestamp,
+                unsafe { u32_slice(hashes, len) }.to_vec(),
+                duration,
+            );
+        });
     });
 }
 
 #[no_mangle]
 pub extern "C" fn fingerprint_ffi_checkpoint_clear(handle: *mut c_void) {
-    with_handle(handle, |matcher: &mut CheckpointMatcher| matcher.clear());
+    ffi_guard((), || {
+        with_handle(handle, |matcher: &mut CheckpointMatcher| matcher.clear());
+    });
 }
 
 #[no_mangle]
 pub extern "C" fn fingerprint_ffi_checkpoint_count(handle: *mut c_void) -> u32 {
-    with_handle_result(handle, 0, |matcher: &mut CheckpointMatcher| matcher.count())
+    ffi_guard(0, || {
+        with_handle_result(handle, 0, |matcher: &mut CheckpointMatcher| matcher.count())
+    })
 }
 
 #[no_mangle]
 pub extern "C" fn fingerprint_ffi_checkpoint_set_drift(handle: *mut c_void, max_drift: u32) {
-    with_handle(handle, |matcher: &mut CheckpointMatcher| {
-        matcher.set_drift(max_drift)
+    ffi_guard((), || {
+        with_handle(handle, |matcher: &mut CheckpointMatcher| {
+            matcher.set_drift(max_drift)
+        });
     });
 }
 
@@ -271,11 +294,13 @@ pub unsafe extern "C" fn fingerprint_ffi_checkpoint_find_top_matches(
     len: usize,
     max_results: u32,
 ) -> FingerprintFfiMatchArray {
-    let query_hashes = unsafe { u32_slice(query_hashes, len) };
-    let results = with_handle_result(handle, Vec::new(), |matcher: &mut CheckpointMatcher| {
-        matcher.find_top_matches(query_hashes, max_results)
-    });
-    vec_to_match_array(results)
+    ffi_guard(FingerprintFfiMatchArray::empty(), || {
+        let query_hashes = unsafe { u32_slice(query_hashes, len) };
+        let results = with_handle_result(handle, Vec::new(), |matcher: &mut CheckpointMatcher| {
+            matcher.find_top_matches(query_hashes, max_results)
+        });
+        vec_to_match_array(results)
+    })
 }
 
 #[no_mangle]
@@ -283,18 +308,22 @@ pub extern "C" fn fingerprint_ffi_streaming_new(
     sample_rate: u32,
     channels: u16,
 ) -> FingerprintFfiHandleResult {
-    mutex_handle_result(StreamingFingerprinter::new(sample_rate, channels))
+    ffi_guard(FingerprintFfiHandleResult::internal_error(), || {
+        mutex_handle_result(StreamingFingerprinter::new(sample_rate, channels))
+    })
 }
 
 #[no_mangle]
 pub extern "C" fn fingerprint_ffi_streaming_free(handle: *mut c_void) {
-    drop_mutex_handle::<StreamingFingerprinter>(handle);
+    ffi_guard((), || drop_mutex_handle::<StreamingFingerprinter>(handle));
 }
 
 #[no_mangle]
 pub extern "C" fn fingerprint_ffi_streaming_duration_ms(handle: *mut c_void) -> u32 {
-    with_handle_result(handle, 0, |fingerprinter: &mut StreamingFingerprinter| {
-        fingerprinter.duration_ms()
+    ffi_guard(0, || {
+        with_handle_result(handle, 0, |fingerprinter: &mut StreamingFingerprinter| {
+            fingerprinter.duration_ms()
+        })
     })
 }
 
@@ -309,13 +338,15 @@ pub unsafe extern "C" fn fingerprint_ffi_streaming_push_i16(
     samples: *const i16,
     len: usize,
 ) -> FingerprintFfiU32Array {
-    let samples = unsafe { i16_slice(samples, len) };
-    let hashes = with_handle_result(
-        handle,
-        Vec::new(),
-        |fingerprinter: &mut StreamingFingerprinter| fingerprinter.push_samples(samples),
-    );
-    vec_to_u32_array(hashes)
+    ffi_guard(FingerprintFfiU32Array::empty(), || {
+        let samples = unsafe { i16_slice(samples, len) };
+        let hashes = with_handle_result(
+            handle,
+            Vec::new(),
+            |fingerprinter: &mut StreamingFingerprinter| fingerprinter.push_samples(samples),
+        );
+        vec_to_u32_array(hashes)
+    })
 }
 
 /// # Safety
@@ -330,31 +361,37 @@ pub unsafe extern "C" fn fingerprint_ffi_streaming_push_f32(
     len: usize,
     channels: u16,
 ) -> FingerprintFfiU32Array {
-    let samples = unsafe { f32_slice(samples, len) };
-    let hashes = with_handle_result(
-        handle,
-        Vec::new(),
-        |fingerprinter: &mut StreamingFingerprinter| {
-            fingerprinter.push_samples_f32(samples, channels)
-        },
-    );
-    vec_to_u32_array(hashes)
+    ffi_guard(FingerprintFfiU32Array::empty(), || {
+        let samples = unsafe { f32_slice(samples, len) };
+        let hashes = with_handle_result(
+            handle,
+            Vec::new(),
+            |fingerprinter: &mut StreamingFingerprinter| {
+                fingerprinter.push_samples_f32(samples, channels)
+            },
+        );
+        vec_to_u32_array(hashes)
+    })
 }
 
 #[no_mangle]
 pub extern "C" fn fingerprint_ffi_streaming_flush(handle: *mut c_void) -> FingerprintFfiU32Array {
-    let hashes = with_handle_result(
-        handle,
-        Vec::new(),
-        |fingerprinter: &mut StreamingFingerprinter| fingerprinter.flush(),
-    );
-    vec_to_u32_array(hashes)
+    ffi_guard(FingerprintFfiU32Array::empty(), || {
+        let hashes = with_handle_result(
+            handle,
+            Vec::new(),
+            |fingerprinter: &mut StreamingFingerprinter| fingerprinter.flush(),
+        );
+        vec_to_u32_array(hashes)
+    })
 }
 
 #[no_mangle]
 pub extern "C" fn fingerprint_ffi_streaming_reset(handle: *mut c_void) {
-    with_handle(handle, |fingerprinter: &mut StreamingFingerprinter| {
-        fingerprinter.reset()
+    ffi_guard((), || {
+        with_handle(handle, |fingerprinter: &mut StreamingFingerprinter| {
+            fingerprinter.reset()
+        });
     });
 }
 
@@ -365,26 +402,32 @@ pub extern "C" fn fingerprint_ffi_streaming_windowed_new(
     window_duration_ms: u32,
     window_interval_ms: u32,
 ) -> FingerprintFfiHandleResult {
-    mutex_handle_result(StreamingWindowedFingerprinter::new(
-        sample_rate,
-        channels,
-        window_duration_ms,
-        window_interval_ms,
-    ))
+    ffi_guard(FingerprintFfiHandleResult::internal_error(), || {
+        mutex_handle_result(StreamingWindowedFingerprinter::new(
+            sample_rate,
+            channels,
+            window_duration_ms,
+            window_interval_ms,
+        ))
+    })
 }
 
 #[no_mangle]
 pub extern "C" fn fingerprint_ffi_streaming_windowed_free(handle: *mut c_void) {
-    drop_mutex_handle::<StreamingWindowedFingerprinter>(handle);
+    ffi_guard((), || {
+        drop_mutex_handle::<StreamingWindowedFingerprinter>(handle)
+    });
 }
 
 #[no_mangle]
 pub extern "C" fn fingerprint_ffi_streaming_windowed_duration_ms(handle: *mut c_void) -> u32 {
-    with_handle_result(
-        handle,
-        0,
-        |fingerprinter: &mut StreamingWindowedFingerprinter| fingerprinter.duration_ms(),
-    )
+    ffi_guard(0, || {
+        with_handle_result(
+            handle,
+            0,
+            |fingerprinter: &mut StreamingWindowedFingerprinter| fingerprinter.duration_ms(),
+        )
+    })
 }
 
 /// # Safety
@@ -398,13 +441,17 @@ pub unsafe extern "C" fn fingerprint_ffi_streaming_windowed_push_i16(
     samples: *const i16,
     len: usize,
 ) -> FingerprintFfiWindowedArray {
-    let samples = unsafe { i16_slice(samples, len) };
-    let windows = with_handle_result(
-        handle,
-        Vec::new(),
-        |fingerprinter: &mut StreamingWindowedFingerprinter| fingerprinter.push_samples(samples),
-    );
-    vec_to_windowed_array(windows)
+    ffi_guard(FingerprintFfiWindowedArray::empty(), || {
+        let samples = unsafe { i16_slice(samples, len) };
+        let windows = with_handle_result(
+            handle,
+            Vec::new(),
+            |fingerprinter: &mut StreamingWindowedFingerprinter| {
+                fingerprinter.push_samples(samples)
+            },
+        );
+        vec_to_windowed_array(windows)
+    })
 }
 
 /// # Safety
@@ -419,35 +466,41 @@ pub unsafe extern "C" fn fingerprint_ffi_streaming_windowed_push_f32(
     len: usize,
     channels: u16,
 ) -> FingerprintFfiWindowedArray {
-    let samples = unsafe { f32_slice(samples, len) };
-    let windows = with_handle_result(
-        handle,
-        Vec::new(),
-        |fingerprinter: &mut StreamingWindowedFingerprinter| {
-            fingerprinter.push_samples_f32(samples, channels)
-        },
-    );
-    vec_to_windowed_array(windows)
+    ffi_guard(FingerprintFfiWindowedArray::empty(), || {
+        let samples = unsafe { f32_slice(samples, len) };
+        let windows = with_handle_result(
+            handle,
+            Vec::new(),
+            |fingerprinter: &mut StreamingWindowedFingerprinter| {
+                fingerprinter.push_samples_f32(samples, channels)
+            },
+        );
+        vec_to_windowed_array(windows)
+    })
 }
 
 #[no_mangle]
 pub extern "C" fn fingerprint_ffi_streaming_windowed_flush(
     handle: *mut c_void,
 ) -> FingerprintFfiWindowedArray {
-    let windows = with_handle_result(
-        handle,
-        Vec::new(),
-        |fingerprinter: &mut StreamingWindowedFingerprinter| fingerprinter.flush(),
-    );
-    vec_to_windowed_array(windows)
+    ffi_guard(FingerprintFfiWindowedArray::empty(), || {
+        let windows = with_handle_result(
+            handle,
+            Vec::new(),
+            |fingerprinter: &mut StreamingWindowedFingerprinter| fingerprinter.flush(),
+        );
+        vec_to_windowed_array(windows)
+    })
 }
 
 #[no_mangle]
 pub extern "C" fn fingerprint_ffi_streaming_windowed_reset(handle: *mut c_void) {
-    with_handle(
-        handle,
-        |fingerprinter: &mut StreamingWindowedFingerprinter| fingerprinter.reset(),
-    );
+    ffi_guard((), || {
+        with_handle(
+            handle,
+            |fingerprinter: &mut StreamingWindowedFingerprinter| fingerprinter.reset(),
+        );
+    });
 }
 
 impl FingerprintFfiBytes {
@@ -470,6 +523,16 @@ impl FingerprintFfiU32Array {
     }
 }
 
+impl FingerprintFfiMatchArray {
+    fn empty() -> Self {
+        Self {
+            ptr: ptr::null_mut(),
+            len: 0,
+            cap: 0,
+        }
+    }
+}
+
 impl FingerprintFfiWindowedArray {
     fn empty() -> Self {
         Self {
@@ -477,6 +540,53 @@ impl FingerprintFfiWindowedArray {
             len: 0,
             cap: 0,
         }
+    }
+}
+
+impl FingerprintFfiFingerprintResult {
+    fn not_found() -> Self {
+        Self {
+            found: 0,
+            duration_ms: 0,
+            hashes: FingerprintFfiU32Array::empty(),
+        }
+    }
+}
+
+impl FingerprintFfiWindowedArrayResult {
+    /// Fallback returned when a panic is caught at the boundary. Status `4`
+    /// (`IoError`) signals an unexpected internal failure; the message is empty
+    /// so the fallback allocates nothing (a forgotten buffer would leak on the
+    /// success path).
+    fn internal_error() -> Self {
+        Self {
+            status: 4,
+            message: FingerprintFfiBytes::empty(),
+            windows: FingerprintFfiWindowedArray::empty(),
+        }
+    }
+}
+
+impl FingerprintFfiHandleResult {
+    /// Fallback returned when a panic is caught while constructing a handle.
+    fn internal_error() -> Self {
+        Self {
+            status: 4,
+            message: FingerprintFfiBytes::empty(),
+            handle: ptr::null_mut(),
+        }
+    }
+}
+
+/// Run an FFI entry point, catching any Rust panic so it never unwinds across
+/// the C ABI (which is undefined behavior). On a caught panic the `fallback` is
+/// returned. `fallback` must own no heap buffers that would leak on success — use
+/// the `empty()`/`not_found()`/`internal_error()` constructors, all of which are
+/// allocation-free.
+fn ffi_guard<R>(fallback: R, body: impl FnOnce() -> R) -> R {
+    match catch_unwind(AssertUnwindSafe(body)) {
+        Ok(value) => value,
+        Err(_) => fallback,
     }
 }
 
@@ -586,14 +696,22 @@ fn drop_mutex_handle<T>(handle: *mut c_void) {
     }
 }
 
+/// Lock a handle's mutex, recovering the guarded value even if a previous panic
+/// poisoned it. Poisoning is now unlikely because `ffi_guard` catches panics
+/// before they escape, but recovering keeps a handle usable rather than turning
+/// every subsequent call into a silent no-op.
+fn lock_recover<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
+    mutex
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
 fn with_handle<T>(handle: *mut c_void, operation: impl FnOnce(&mut T)) {
     if handle.is_null() {
         return;
     }
     let mutex = unsafe { &*(handle as *mut Mutex<T>) };
-    if let Ok(mut value) = mutex.lock() {
-        operation(&mut value);
-    }
+    operation(&mut lock_recover(mutex));
 }
 
 fn with_handle_result<T, R>(
@@ -605,10 +723,7 @@ fn with_handle_result<T, R>(
         return fallback;
     }
     let mutex = unsafe { &*(handle as *mut Mutex<T>) };
-    match mutex.lock() {
-        Ok(mut value) => operation(&mut value),
-        Err(_) => fallback,
-    }
+    operation(&mut lock_recover(mutex))
 }
 
 unsafe fn u8_slice<'a>(ptr: *const u8, len: usize) -> &'a [u8] {
@@ -641,4 +756,86 @@ unsafe fn f32_slice<'a>(ptr: *const f32, len: usize) -> &'a [f32] {
     } else {
         slice::from_raw_parts(ptr, len)
     }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn ffi_guard_returns_body_value_on_success() {
+        assert_eq!(ffi_guard(0u32, || 42), 42);
+    }
+
+    #[test]
+    fn ffi_guard_returns_fallback_on_panic() {
+        assert_eq!(ffi_guard(7u32, || panic!("boom")), 7);
+    }
+
+    #[test]
+    fn lock_recover_recovers_a_poisoned_mutex() {
+        let mutex = Mutex::new(5u32);
+        let _ = catch_unwind(AssertUnwindSafe(|| {
+            let _guard = mutex.lock().unwrap();
+            panic!("poison the lock while held");
+        }));
+        assert!(mutex.is_poisoned());
+        *lock_recover(&mutex) += 1;
+        assert_eq!(*lock_recover(&mutex), 6);
+    }
+
+    #[test]
+    fn null_handle_operations_are_safe_no_ops() {
+        assert_eq!(fingerprint_ffi_checkpoint_count(ptr::null_mut()), 0);
+        assert_eq!(fingerprint_ffi_streaming_duration_ms(ptr::null_mut()), 0);
+        fingerprint_ffi_checkpoint_clear(ptr::null_mut());
+        fingerprint_ffi_checkpoint_free(ptr::null_mut());
+        fingerprint_ffi_streaming_free(ptr::null_mut());
+    }
+
+    #[test]
+    fn checkpoint_roundtrips_through_the_c_api() {
+        let handle = fingerprint_ffi_checkpoint_new(1);
+        assert!(!handle.is_null());
+
+        let hashes = [0u32, 1, 2];
+        unsafe {
+            fingerprint_ffi_checkpoint_add(handle, 10.0, hashes.as_ptr(), hashes.len(), 1.0);
+        }
+        assert_eq!(fingerprint_ffi_checkpoint_count(handle), 1);
+
+        let matches = unsafe {
+            fingerprint_ffi_checkpoint_find_top_matches(handle, hashes.as_ptr(), hashes.len(), 5)
+        };
+        assert_eq!(matches.len, 1);
+        fingerprint_ffi_free_match_array(matches);
+        fingerprint_ffi_checkpoint_free(handle);
+    }
+
+    #[test]
+    fn streaming_handle_still_usable_after_lock_poisoning() {
+        // Poison the handle's mutex directly, then confirm the FFI recovers it
+        // instead of degrading to a permanent no-op.
+        let result = fingerprint_ffi_streaming_new(TARGET_RATE, 1);
+        assert_eq!(result.status, 0);
+        let handle = result.handle;
+
+        let mutex = unsafe { &*(handle as *mut Mutex<StreamingFingerprinter>) };
+        let _ = catch_unwind(AssertUnwindSafe(|| {
+            let _guard = mutex.lock().unwrap();
+            panic!("poison while held");
+        }));
+        assert!(mutex.is_poisoned());
+
+        let samples = [0.1f32; 8_192];
+        let hashes = unsafe {
+            fingerprint_ffi_streaming_push_f32(handle, samples.as_ptr(), samples.len(), 1)
+        };
+        // The recovered handle keeps accumulating duration rather than no-oping.
+        assert!(fingerprint_ffi_streaming_duration_ms(handle) > 0);
+        fingerprint_ffi_free_u32_array(hashes);
+        fingerprint_ffi_streaming_free(handle);
+    }
+
+    const TARGET_RATE: u32 = 11_025;
 }

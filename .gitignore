@@ -51,6 +51,13 @@ reviews_triage/
 triage_decisions.db
 rust/target/
 
+# cargo-fuzz local outputs (the targets and README are tracked)
+rust/fuzz/target/
+rust/fuzz/corpus/
+rust/fuzz/artifacts/
+rust/fuzz/coverage/
+rust/fuzz/Cargo.lock
+
 # mise developer-local overrides
 mise.local.toml
 

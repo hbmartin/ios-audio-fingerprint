@@ -27,26 +27,29 @@ pub fn resample_to_mono(samples: &[f32], sample_rate: u32, channels: u16) -> Vec
         return Vec::new();
     }
 
-    let mut mono = vec![0.0; frame_count];
-    if channel_count == 1 {
-        mono.copy_from_slice(&samples[..frame_count]);
-    } else {
-        for (frame, output) in mono.iter_mut().enumerate() {
+    // Downmix a single source frame to mono on demand. Computing this inline lets
+    // the resampling path avoid allocating a separate full-length mono buffer; the
+    // arithmetic is identical to materializing mono first, so the output is
+    // unchanged.
+    let mono_frame = |frame: usize| -> f32 {
+        if channel_count == 1 {
+            samples[frame]
+        } else {
             let base = frame * channel_count;
             let sum: f32 = samples[base..base + channel_count].iter().sum();
-            *output = sum / channel_count as f32;
+            sum / channel_count as f32
         }
-    }
+    };
 
     if sample_rate == TARGET_SAMPLE_RATE {
-        return mono;
+        return (0..frame_count).map(mono_frame).collect();
     }
     if sample_rate == 0 {
         return Vec::new();
     }
 
     let ratio = sample_rate as f64 / TARGET_SAMPLE_RATE as f64;
-    let output_count = (mono.len() as f64 / ratio).floor() as usize;
+    let output_count = (frame_count as f64 / ratio).floor() as usize;
     if output_count == 0 {
         return Vec::new();
     }
@@ -57,10 +60,12 @@ pub fn resample_to_mono(samples: &[f32], sample_rate: u32, channels: u16) -> Vec
         let source_index = source_position.floor() as usize;
         let fraction = (source_position - source_index as f64) as f32;
 
-        *value = if source_index + 1 < mono.len() {
-            mono[source_index] + (mono[source_index + 1] - mono[source_index]) * fraction
-        } else if source_index < mono.len() {
-            mono[source_index]
+        *value = if source_index + 1 < frame_count {
+            let current = mono_frame(source_index);
+            let next = mono_frame(source_index + 1);
+            current + (next - current) * fraction
+        } else if source_index < frame_count {
+            mono_frame(source_index)
         } else {
             0.0
         };

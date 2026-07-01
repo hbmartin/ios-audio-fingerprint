@@ -7,8 +7,8 @@ use crate::error::FingerprintError;
 use crate::fingerprint::encoder::compute_hash;
 use crate::fingerprint::fft::FftProcessor;
 use crate::fingerprint::{
-    duration_ms_for_samples, fingerprint_samples, FRAME_SIZE, HASH_FRAME_COUNT, HASH_STRIDE_FRAMES,
-    HOP_SIZE, PITCH_CLASSES,
+    duration_ms_for_samples, fingerprint_samples_with, FRAME_SIZE, HASH_FRAME_COUNT,
+    HASH_STRIDE_FRAMES, HOP_SIZE, PITCH_CLASSES,
 };
 
 use super::WindowedFingerprint;
@@ -31,6 +31,7 @@ pub struct StreamingWindowedFingerprinter {
     buffer_start_sample: usize,
     next_window_start: usize,
     total_samples_seen_at_target_rate: usize,
+    fft: FftProcessor,
 }
 
 impl StreamingFingerprinter {
@@ -87,9 +88,11 @@ impl StreamingFingerprinter {
 
     fn process_buffer(&mut self) {
         while self.buffer.len() >= FRAME_SIZE {
-            let frame: Vec<f32> = self.buffer.iter().take(FRAME_SIZE).copied().collect();
-            self.chroma_frames
-                .push_back(self.fft.process_to_chroma(&frame));
+            // Read the frame straight from the (linearized) ring buffer instead of
+            // copying it into a fresh Vec each hop.
+            let frame = self.buffer.make_contiguous();
+            let chroma = self.fft.process_to_chroma(&frame[..FRAME_SIZE]);
+            self.chroma_frames.push_back(chroma);
             for _ in 0..HOP_SIZE.min(self.buffer.len()) {
                 self.buffer.pop_front();
             }
@@ -99,13 +102,10 @@ impl StreamingFingerprinter {
     fn emit_hashes(&mut self) -> Vec<u32> {
         let mut hashes = Vec::new();
         while self.chroma_frames.len() >= HASH_FRAME_COUNT {
-            let frames: Vec<[f32; PITCH_CLASSES]> = self
-                .chroma_frames
-                .iter()
-                .take(HASH_FRAME_COUNT)
-                .copied()
-                .collect();
-            hashes.push(compute_hash(&frames));
+            // Hash directly over the linearized chroma queue rather than copying
+            // the frame window into a fresh Vec each hash.
+            let frames = self.chroma_frames.make_contiguous();
+            hashes.push(compute_hash(&frames[..HASH_FRAME_COUNT]));
             for _ in 0..HASH_STRIDE_FRAMES.min(self.chroma_frames.len()) {
                 self.chroma_frames.pop_front();
             }
@@ -144,6 +144,7 @@ impl StreamingWindowedFingerprinter {
             buffer_start_sample: 0,
             next_window_start: 0,
             total_samples_seen_at_target_rate: 0,
+            fft: FftProcessor::new(TARGET_SAMPLE_RATE),
         })
     }
 
@@ -201,15 +202,13 @@ impl StreamingWindowedFingerprinter {
 
         while self.next_window_start.saturating_add(window_samples) <= available_end {
             let relative_start = self.next_window_start - self.buffer_start_sample;
-            let window: Vec<f32> = self
-                .samples_at_target_rate
-                .iter()
-                .skip(relative_start)
-                .take(window_samples)
-                .copied()
-                .collect();
             let timestamp_ms = duration_ms_for_samples(self.next_window_start);
-            let hashes = fingerprint_samples(&window, self.window_duration_ms).hashes;
+            // Slice the window directly out of the queue (no per-window copy) and
+            // reuse the shared FFT plan across every window.
+            let contiguous = self.samples_at_target_rate.make_contiguous();
+            let window = &contiguous[relative_start..relative_start + window_samples];
+            let hashes =
+                fingerprint_samples_with(&mut self.fft, window, self.window_duration_ms).hashes;
             windows.push(WindowedFingerprint {
                 timestamp_ms,
                 duration_ms: self.window_duration_ms,

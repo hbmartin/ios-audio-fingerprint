@@ -4,7 +4,7 @@ use symphonia::core::audio::SampleBuffer;
 use symphonia::core::codecs::DecoderOptions;
 use symphonia::core::errors::Error as SymphoniaError;
 use symphonia::core::formats::FormatOptions;
-use symphonia::core::io::MediaSourceStream;
+use symphonia::core::io::{MediaSource, MediaSourceStream};
 use symphonia::core::meta::MetadataOptions;
 use symphonia::core::probe::Hint;
 
@@ -39,8 +39,20 @@ fn decode_mp3_bytes(data: &[u8]) -> Result<DecodedAudio, FingerprintError> {
         return Err(FingerprintError::invalid("MP3 input is too large"));
     }
 
-    let cursor = Cursor::new(data.to_vec());
-    let media_source = MediaSourceStream::new(Box::new(cursor), Default::default());
+    // Borrow `data` directly instead of cloning up to 128 MiB into an owned
+    // buffer. Symphonia's `MediaSourceStream::new` requires a
+    // `Box<dyn MediaSource + 'static>`, so the borrow's lifetime is erased.
+    //
+    // SAFETY: the `MediaSourceStream` and everything derived from it (`format`,
+    // `decoder`, and each decoded `Packet`) are locals dropped before this
+    // function returns, whereas `data` is borrowed for the entire function body.
+    // Symphonia reads the source synchronously on the current thread and copies
+    // decoded audio into owned buffers; it never retains the source past decoding
+    // or moves it to another thread. The erased `'static` lifetime is therefore
+    // never observed beyond the true lifetime of `data`.
+    let source: Box<dyn MediaSource + '_> = Box::new(Cursor::new(data));
+    let source: Box<dyn MediaSource> = unsafe { std::mem::transmute(source) };
+    let media_source = MediaSourceStream::new(source, Default::default());
     let mut hint = Hint::new();
     hint.with_extension("mp3");
 

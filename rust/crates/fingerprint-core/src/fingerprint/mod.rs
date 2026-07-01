@@ -88,23 +88,68 @@ pub fn fingerprint_windows(
         return Ok(Vec::new());
     }
 
-    let mut windows = Vec::new();
-    let mut start = 0usize;
-    while start + window_samples <= samples.len() {
-        let window = &samples[start..start + window_samples];
-        let fingerprint = fingerprint_samples(window, window_duration_ms);
-        windows.push(WindowedFingerprint {
-            timestamp_ms: duration_ms_for_samples(start),
-            duration_ms: window_duration_ms,
-            hashes: fingerprint.hashes,
-        });
-        start += interval_samples;
-    }
+    let starts: Vec<usize> = (0usize..)
+        .map(|step| step * interval_samples)
+        .take_while(|&start| start + window_samples <= samples.len())
+        .collect();
+
+    let fingerprint_window = |fft: &mut FftProcessor, start: usize| WindowedFingerprint {
+        timestamp_ms: duration_ms_for_samples(start),
+        duration_ms: window_duration_ms,
+        hashes: fingerprint_samples_with(
+            fft,
+            &samples[start..start + window_samples],
+            window_duration_ms,
+        )
+        .hashes,
+    };
+
+    // Each window is independent, so the two paths produce identical output.
+    #[cfg(feature = "parallel")]
+    let windows = {
+        use rayon::prelude::*;
+        starts
+            .par_iter()
+            .map(|&start| {
+                // A per-window plan is unavoidable across threads, but amortized
+                // by the parallel speedup.
+                let mut fft = FftProcessor::new(TARGET_SAMPLE_RATE);
+                fingerprint_window(&mut fft, start)
+            })
+            .collect()
+    };
+
+    #[cfg(not(feature = "parallel"))]
+    let windows = {
+        // One FFT plan (and Hann window / chroma table) reused across every window
+        // instead of rebuilt per window.
+        let mut fft = FftProcessor::new(TARGET_SAMPLE_RATE);
+        starts
+            .iter()
+            .map(|&start| fingerprint_window(&mut fft, start))
+            .collect()
+    };
+
     Ok(windows)
 }
 
 pub fn fingerprint_samples(samples: &[f32], duration_ms: u32) -> Fingerprint {
     let mut fft = FftProcessor::new(TARGET_SAMPLE_RATE);
+    fingerprint_samples_with(&mut fft, samples, duration_ms)
+}
+
+/// Fingerprint one window of samples using a caller-provided [`FftProcessor`].
+///
+/// Callers that fingerprint many windows (one-shot windowing and the windowed
+/// streaming path) share a single processor so the FFT plan, Hann window, and
+/// chroma table are built once rather than per window. The output is identical
+/// to constructing a fresh processor because the processor carries no state
+/// between frames.
+pub(crate) fn fingerprint_samples_with(
+    fft: &mut FftProcessor,
+    samples: &[f32],
+    duration_ms: u32,
+) -> Fingerprint {
     let mut chroma_frames = Vec::new();
     let mut offset = 0usize;
     while offset + FRAME_SIZE <= samples.len() {
