@@ -4,14 +4,17 @@ use std::sync::Arc;
 use num_complex::Complex;
 use rustfft::{Fft, FftPlanner};
 
-use crate::fingerprint::chroma::chroma_from_magnitudes;
+use crate::fingerprint::chroma::ChromaMap;
 use crate::fingerprint::{FRAME_SIZE, PITCH_CLASSES};
 
 pub struct FftProcessor {
-    sample_rate: u32,
     fft: Arc<dyn Fft<f32>>,
     hann: Vec<f32>,
     buffer: Vec<Complex<f32>>,
+    /// Reused magnitude scratch (`FRAME_SIZE / 2 + 1` bins) so per-frame calls do
+    /// not allocate.
+    magnitudes: Vec<f32>,
+    chroma_map: ChromaMap,
 }
 
 impl FftProcessor {
@@ -22,30 +25,36 @@ impl FftProcessor {
             .map(|index| 0.5 * (1.0 - (2.0 * PI * index as f32 / (FRAME_SIZE - 1) as f32).cos()))
             .collect();
         let buffer = vec![Complex::new(0.0, 0.0); FRAME_SIZE];
+        let magnitudes = vec![0.0; FRAME_SIZE / 2 + 1];
+        let chroma_map = ChromaMap::new(FRAME_SIZE, sample_rate);
 
         Self {
-            sample_rate,
             fft,
             hann,
             buffer,
+            magnitudes,
+            chroma_map,
         }
     }
 
     pub fn process_to_chroma(&mut self, frame: &[f32]) -> [f32; PITCH_CLASSES] {
-        let magnitudes = self.magnitudes(frame);
-        chroma_from_magnitudes(&magnitudes, self.sample_rate)
+        self.compute_magnitudes(frame);
+        self.chroma_map.chroma(&self.magnitudes)
     }
 
-    pub fn magnitudes(&mut self, frame: &[f32]) -> Vec<f32> {
+    fn compute_magnitudes(&mut self, frame: &[f32]) {
         for index in 0..FRAME_SIZE {
             let real = frame.get(index).copied().unwrap_or(0.0) * self.hann[index];
             self.buffer[index] = Complex::new(real, 0.0);
         }
 
         self.fft.process(&mut self.buffer);
-        self.buffer[..=FRAME_SIZE / 2]
-            .iter()
-            .map(|value| (value.re * value.re + value.im * value.im).sqrt())
-            .collect()
+        for (magnitude, value) in self
+            .magnitudes
+            .iter_mut()
+            .zip(self.buffer[..=FRAME_SIZE / 2].iter())
+        {
+            *magnitude = (value.re * value.re + value.im * value.im).sqrt();
+        }
     }
 }
