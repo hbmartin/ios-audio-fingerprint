@@ -86,7 +86,7 @@ jobs:
         run: ditto -c -k --keepParent Fingerprint.xcframework "${ASSET_NAME}"
 
       - name: Test Swift package on macOS
-        run: swift test --filter 'FingerprintTests\.FingerprintTests'
+        run: swift test --skip FingerprintBenchmarkTests
 
       - name: Build Swift package for iOS device
         run: |
@@ -192,4 +192,4 @@ jobs:
           cd "${temp_dir}/repo"
           swift package reset
           swift build
-          swift test --filter 'FingerprintTests\.FingerprintTests'
+          swift test --skip FingerprintBenchmarkTests

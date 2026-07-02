@@ -1,5 +1,12 @@
-// swift-tools-version:5.7
+// swift-tools-version:6.2
 import PackageDescription
+
+let swiftSettings: [SwiftSetting] = [
+    .swiftLanguageMode(.v6),
+    .enableUpcomingFeature("ExistentialAny"),
+    .enableUpcomingFeature("MemberImportVisibility"),
+    .enableUpcomingFeature("InternalImportsByDefault"),
+]
 
 let package = Package(
     name: "Fingerprint",
@@ -12,12 +19,14 @@ let package = Package(
         .target(
             name: "Fingerprint",
             dependencies: ["FingerprintFFI"],
-            path: "Sources/Fingerprint"
+            path: "Sources/Fingerprint",
+            swiftSettings: swiftSettings
         ),
         .executableTarget(
             name: "FingerprintBenchmarkRunner",
             dependencies: ["Fingerprint"],
-            path: "Benchmarks/FingerprintBenchmarkRunner"
+            path: "Benchmarks/FingerprintBenchmarkRunner",
+            swiftSettings: swiftSettings
         ),
         .binaryTarget(
             name: "FingerprintFFI",
@@ -25,7 +34,8 @@ let package = Package(
         ),
         .testTarget(
             name: "FingerprintTests",
-            dependencies: ["Fingerprint"]
+            dependencies: ["Fingerprint"],
+            swiftSettings: swiftSettings
         ),
     ]
 )

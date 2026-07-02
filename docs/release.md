@@ -1,6 +1,7 @@
 # Releasing the Swift Package
 
-This package ships Swift sources plus a prebuilt Rust FFI binary target. The
+This package ships Swift sources plus a prebuilt Rust FFI binary target.
+Building and validating a release requires a Swift 6.2+ toolchain (Xcode 26+). The
 repository keeps `Package.swift` pointed at the local `Fingerprint.xcframework`
 for development, then the release workflow creates a tag-only release commit
 where `FingerprintFFI` points at the uploaded GitHub Release asset URL and
@@ -83,7 +84,7 @@ Run the same validation locally when possible:
 cargo test --manifest-path rust/Cargo.toml --workspace --locked
 FINGERPRINT_REQUIRE_ALL_SLICES=1 scripts/build-rust-xcframework.sh
 scripts/verify-xcframework.sh Fingerprint.xcframework
-swift test --filter 'FingerprintTests\.FingerprintTests'
+swift test --skip FingerprintBenchmarkTests
 xcodebuild -scheme Fingerprint -destination 'generic/platform=iOS' CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO build
 xcodebuild -scheme Fingerprint -destination 'generic/platform=iOS Simulator' CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO build
 ```
@@ -143,7 +144,7 @@ git clone --depth 1 --branch v0.1.0 https://github.com/<owner>/<repo>.git "$tmpd
 cd "$tmpdir/repo"
 swift package reset
 swift build
-swift test --filter 'FingerprintTests\.FingerprintTests'
+swift test --skip FingerprintBenchmarkTests
 ```
 
 Also test from an external app by adding the package URL and selecting the new
