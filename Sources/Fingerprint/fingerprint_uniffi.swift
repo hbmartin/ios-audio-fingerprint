@@ -80,7 +80,9 @@ public final class CheckpointMatcher: CheckpointMatcherProtocol, @unchecked Send
 }
 
 public protocol FingerprinterProtocol: AnyObject {
-    func fingerprintDataWindowed(data: Data, windowDurationMs: UInt32, windowIntervalMs: UInt32) throws(FingerprintError) -> [WindowedFingerprint]
+    func fingerprintDataWindowed(
+        data: Data, windowDurationMs: UInt32, windowIntervalMs: UInt32
+    ) throws(FingerprintError) -> [WindowedFingerprint]
 }
 
 public final class Fingerprinter: FingerprinterProtocol, Sendable {
@@ -96,7 +98,9 @@ public final class Fingerprinter: FingerprinterProtocol, Sendable {
         UnsafeMutableRawPointer(Unmanaged.passUnretained(self).toOpaque())
     }
 
-    public func fingerprintDataWindowed(data: Data, windowDurationMs: UInt32, windowIntervalMs: UInt32) throws(FingerprintError) -> [WindowedFingerprint] {
+    public func fingerprintDataWindowed(
+        data: Data, windowDurationMs: UInt32, windowIntervalMs: UInt32
+    ) throws(FingerprintError) -> [WindowedFingerprint] {
         let result = data.withUnsafeBytes { rawBuffer in
             let pointer = rawBuffer.bindMemory(to: UInt8.self).baseAddress
             return fingerprint_ffi_fingerprint_data_windowed(pointer, rawBuffer.count, windowDurationMs, windowIntervalMs)
@@ -267,7 +271,9 @@ public final class StreamingWindowedFingerprinter: StreamingWindowedFingerprinte
         fingerprint_ffi_streaming_windowed_reset(raw)
     }
 
-    private static func makeHandle(sampleRate: UInt32, channels: UInt16, windowDurationMs: UInt32, windowIntervalMs: UInt32) throws(FingerprintError) -> UnsafeMutableRawPointer {
+    private static func makeHandle(
+        sampleRate: UInt32, channels: UInt16, windowDurationMs: UInt32, windowIntervalMs: UInt32
+    ) throws(FingerprintError) -> UnsafeMutableRawPointer {
         try takeHandleResult(fingerprint_ffi_streaming_windowed_new(sampleRate, channels, windowDurationMs, windowIntervalMs))
     }
 }
@@ -316,10 +322,10 @@ extension FingerprintError: LocalizedError {
     public var errorDescription: String? {
         switch self {
         case let .DecodeError(message),
-             let .UnsupportedFormat(message),
-             let .InvalidInput(message),
-             let .IoError(message),
-             let .InternalError(message):
+            let .UnsupportedFormat(message),
+            let .InvalidInput(message),
+            let .IoError(message),
+            let .InternalError(message):
             return message
         }
     }

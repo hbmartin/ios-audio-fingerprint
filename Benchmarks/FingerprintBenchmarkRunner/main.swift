@@ -67,15 +67,16 @@ struct Options {
             case "--warmups":
                 warmups = try Self.nonNegativeInt(after: &index, in: arguments, option: "--warmups")
             case "--help", "-h":
-                print("""
-                Usage: swift run -c release FingerprintBenchmarkRunner [options]
+                print(
+                    """
+                    Usage: swift run -c release FingerprintBenchmarkRunner [options]
 
-                Options:
-                  --output-dir <path>   Directory that will receive a label subdirectory.
-                  --label <name>        Baseline label. Defaults to a UTC timestamp.
-                  --iterations <count>  Measured iterations per case. Defaults to 15.
-                  --warmups <count>     Untimed warmup iterations per case. Defaults to 5.
-                """)
+                    Options:
+                      --output-dir <path>   Directory that will receive a label subdirectory.
+                      --label <name>        Baseline label. Defaults to a UTC timestamp.
+                      --iterations <count>  Measured iterations per case. Defaults to 15.
+                      --warmups <count>     Untimed warmup iterations per case. Defaults to 5.
+                    """)
                 Foundation.exit(0)
             default:
                 throw BenchmarkError.invalidArgument("Unknown option: \(arguments[index])")
@@ -386,9 +387,7 @@ func percentile(_ sorted: [Double], _ percentile: Double) -> Double {
 }
 
 func csv(for report: BenchmarkReport) -> String {
-    var lines = [
-        "name,category,iterations,warmups,checksum,min_ms,median_ms,mean_ms,p90_ms,max_ms,standard_deviation_ms,workload",
-    ]
+    var lines = ["name,category,iterations,warmups,checksum,min_ms,median_ms,mean_ms,p90_ms,max_ms,standard_deviation_ms,workload"]
     for result in report.results {
         lines.append(
             [
@@ -411,24 +410,35 @@ func csv(for report: BenchmarkReport) -> String {
 }
 
 func markdown(for report: BenchmarkReport) -> String {
-    var output = """
-    # Fingerprint Benchmark Results
+    var output =
+        """
+        # Fingerprint Benchmark Results
 
-    - Label: `\(report.label)`
-    - Timestamp: `\(report.timestamp)`
-    - Configuration: `\(report.configuration)`
-    - Fingerprint version: `\(report.fingerprintVersion)`
-    - Swift: `\(report.swiftVersion)`
-    - OS: `\(report.system.operatingSystem)`
-    - CPUs: `\(report.system.activeProcessorCount)` active / `\(report.system.processorCount)` total
-    - Memory: `\(report.system.physicalMemoryBytes)` bytes
-    - Iterations: `\(report.results.first?.iterations ?? 0)` measured, `\(report.results.first?.warmups ?? 0)` warmups per benchmark
+        - Label: `\(report.label)`
+        - Timestamp: `\(report.timestamp)`
+        - Configuration: `\(report.configuration)`
+        - Fingerprint version: `\(report.fingerprintVersion)`
+        - Swift: `\(report.swiftVersion)`
+        - OS: `\(report.system.operatingSystem)`
+        - CPUs: `\(report.system.activeProcessorCount)` active / `\(report.system.processorCount)` total
+        - Memory: `\(report.system.physicalMemoryBytes)` bytes
+        - Iterations: `\(report.results.first?.iterations ?? 0)` measured, `\(report.results.first?.warmups ?? 0)` warmups per benchmark
 
-    | Benchmark | Category | Median ms | Mean ms | P90 ms | Min ms | Max ms | StdDev ms |
-    | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: |
-    """
+        | Benchmark | Category | Median ms | Mean ms | P90 ms | Min ms | Max ms | StdDev ms |
+        | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: |
+        """
     for result in report.results.sorted(by: { $0.medianMs > $1.medianMs }) {
-        output += "\n| `\(result.name)` | \(result.category) | \(format(result.medianMs)) | \(format(result.meanMs)) | \(format(result.p90Ms)) | \(format(result.minMs)) | \(format(result.maxMs)) | \(format(result.standardDeviationMs)) |"
+        let columns = [
+            "`\(result.name)`",
+            result.category,
+            format(result.medianMs),
+            format(result.meanMs),
+            format(result.p90Ms),
+            format(result.minMs),
+            format(result.maxMs),
+            format(result.standardDeviationMs),
+        ]
+        output += "\n| " + columns.joined(separator: " | ") + " |"
     }
     output += "\n\n## Workloads\n\n"
     for result in report.results {
@@ -450,9 +460,9 @@ func format(_ value: Double) -> String {
 
 func buildConfiguration() -> String {
     #if DEBUG
-    return "debug"
+        return "debug"
     #else
-    return "release"
+        return "release"
     #endif
 }
 
