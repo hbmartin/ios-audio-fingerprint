@@ -1,6 +1,8 @@
 import FingerprintFFI
 import Foundation
 
+private let fingerprintFfiStatusOk: UInt32 = 0
+
 public protocol CheckpointMatcherProtocol: AnyObject {
     func add(timestamp: Float, hashes: [UInt32], duration: Float)
     func clear()
@@ -95,7 +97,7 @@ open class Fingerprinter: FingerprinterProtocol {
             return fingerprint_ffi_fingerprint_data_windowed(pointer, rawBuffer.count, windowDurationMs, windowIntervalMs)
         }
 
-        if result.status != 0 {
+        if result.status != fingerprintFfiStatusOk {
             fingerprint_ffi_free_windowed_array(result.windows)
             throw takeError(status: result.status, message: result.message)
         }
@@ -408,7 +410,7 @@ private func takeWindowedArray(_ array: FingerprintFfiWindowedArray) -> [Windowe
 }
 
 private func takeHandleResult(_ result: FingerprintFfiHandleResult) throws -> UnsafeMutableRawPointer {
-    if result.status != 0 {
+    if result.status != fingerprintFfiStatusOk {
         throw takeError(status: result.status, message: result.message)
     }
 

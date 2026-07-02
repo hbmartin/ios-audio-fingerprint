@@ -89,16 +89,16 @@ impl StreamingFingerprinter {
     fn process_buffer(&mut self) {
         while self.buffer.len() >= FRAME_SIZE {
             let (first, second) = self.buffer.as_slices();
-            let mut frame = [0.0f32; FRAME_SIZE];
-            if first.len() >= FRAME_SIZE {
-                frame.copy_from_slice(&first[..FRAME_SIZE]);
+            let chroma = if first.len() >= FRAME_SIZE {
+                self.fft.process_to_chroma(&first[..FRAME_SIZE])
             } else {
+                let mut frame = [0.0f32; FRAME_SIZE];
                 frame[..first.len()].copy_from_slice(first);
                 let remaining = FRAME_SIZE - first.len();
                 frame[first.len()..].copy_from_slice(&second[..remaining]);
-            }
+                self.fft.process_to_chroma(&frame)
+            };
 
-            let chroma = self.fft.process_to_chroma(&frame);
             self.chroma_frames.push_back(chroma);
             for _ in 0..HOP_SIZE.min(self.buffer.len()) {
                 self.buffer.pop_front();
@@ -110,16 +110,17 @@ impl StreamingFingerprinter {
         let mut hashes = Vec::new();
         while self.chroma_frames.len() >= HASH_FRAME_COUNT {
             let (first, second) = self.chroma_frames.as_slices();
-            let mut frames = [[0.0f32; PITCH_CLASSES]; HASH_FRAME_COUNT];
-            if first.len() >= HASH_FRAME_COUNT {
-                frames.copy_from_slice(&first[..HASH_FRAME_COUNT]);
+            let hash = if first.len() >= HASH_FRAME_COUNT {
+                compute_hash(&first[..HASH_FRAME_COUNT])
             } else {
+                let mut frames = [[0.0f32; PITCH_CLASSES]; HASH_FRAME_COUNT];
                 frames[..first.len()].copy_from_slice(first);
                 let remaining = HASH_FRAME_COUNT - first.len();
                 frames[first.len()..].copy_from_slice(&second[..remaining]);
-            }
+                compute_hash(&frames)
+            };
 
-            hashes.push(compute_hash(&frames));
+            hashes.push(hash);
             for _ in 0..HASH_STRIDE_FRAMES.min(self.chroma_frames.len()) {
                 self.chroma_frames.pop_front();
             }
