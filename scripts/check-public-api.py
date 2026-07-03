@@ -98,7 +98,13 @@ def extract_api(text: str) -> list[str]:
                 else:
                     pending = [line]
             elif ext_match and "{" in line:
-                entries.append(re.sub(r"\s+", " ", line.split("{")[0].strip()))
+                # An extension with an inheritance clause adds conformances to a
+                # (potentially public) type, so it is part of the API surface; a
+                # bare `extension X` is only a scoping construct and is skipped,
+                # though its public members are still recorded via the scope.
+                header = line.split("{")[0].strip()
+                if ":" in header:
+                    entries.append(re.sub(r"\s+", " ", header))
                 scopes.append((ext_match.group(1), "extension", True, depth))
 
         depth += raw.count("{") - raw.count("}")
@@ -110,7 +116,7 @@ def extract_api(text: str) -> list[str]:
 
 def current_api() -> str:
     parts: list[str] = []
-    for path in sorted(SOURCE_DIR.glob("*.swift")):
+    for path in sorted(SOURCE_DIR.rglob("*.swift")):
         parts.append(f"== {path.relative_to(REPO_ROOT)} ==")
         parts.extend(extract_api(path.read_text()))
     return "\n".join(parts) + "\n"
