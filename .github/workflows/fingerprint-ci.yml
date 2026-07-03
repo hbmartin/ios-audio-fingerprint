@@ -27,15 +27,7 @@ jobs:
           persist-credentials: false
 
       - name: Assert Swift 6.2+ toolchain
-        run: |
-          swift --version
-          version="$(swift -version 2>&1 | sed -nE 's/.*Swift version ([0-9]+\.[0-9]+).*/\1/p' | head -n 1)"
-          major="${version%%.*}"
-          minor="${version#*.}"
-          if [ -z "${version}" ] || [ "${major}" -lt 6 ] || { [ "${major}" -eq 6 ] && [ "${minor%%.*}" -lt 2 ]; }; then
-            echo "Swift 6.2 or newer is required; found '${version:-unknown}'" >&2
-            exit 1
-          fi
+        run: scripts/assert-swift-toolchain.sh
 
       - name: Lint Swift sources
         run: swift format lint --strict --parallel --recursive Package.swift Sources Tests Benchmarks
@@ -73,14 +65,7 @@ jobs:
           swift --version
 
       - name: Assert Swift 6.2+ toolchain
-        run: |
-          version="$(swift -version 2>&1 | sed -nE 's/.*Swift version ([0-9]+\.[0-9]+).*/\1/p' | head -n 1)"
-          major="${version%%.*}"
-          minor="${version#*.}"
-          if [ -z "${version}" ] || [ "${major}" -lt 6 ] || { [ "${major}" -eq 6 ] && [ "${minor%%.*}" -lt 2 ]; }; then
-            echo "Swift 6.2 or newer is required; found '${version:-unknown}'" >&2
-            exit 1
-          fi
+        run: scripts/assert-swift-toolchain.sh
 
       - name: Install Rust stable and Apple targets
         run: |
@@ -122,7 +107,7 @@ jobs:
         run: swift build --build-tests -Xswiftc -warnings-as-errors
 
       - name: Test Swift package on macOS
-        run: swift test --skip FingerprintBenchmarkTests
+        run: swift test --skip FingerprintBenchmarkTests -Xswiftc -warnings-as-errors
 
       - name: Build Swift package for iOS device
         run: |
