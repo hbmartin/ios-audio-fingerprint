@@ -42,19 +42,15 @@ jobs:
 
   api-stability:
     name: Public API stability
-    runs-on: macos-26
-    if: github.event_name == 'pull_request' && !contains(github.event.pull_request.labels.*.name, 'api-change-approved')
-    env:
-      BASE_REF: ${{ github.event.pull_request.base.sha }}
+    runs-on: ubuntu-latest
     steps:
       - name: Check out repository
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
         with:
-          fetch-depth: 0
           persist-credentials: false
 
-      - name: Diagnose API breaking changes vs base
-        run: swift package diagnose-api-breaking-changes "${BASE_REF}" --products Fingerprint
+      - name: Check public API surface against baseline
+        run: python3 scripts/check-public-api.py
 
   build:
     name: Build and test Fingerprint

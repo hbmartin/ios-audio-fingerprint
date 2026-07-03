@@ -1,0 +1,93 @@
+== Sources/Fingerprint/fingerprint_uniffi.swift ==
+public import Foundation
+public protocol CheckpointMatcherProtocol: AnyObject
+CheckpointMatcherProtocol :: func add(timestamp: Float, hashes: [UInt32], duration: Float)
+CheckpointMatcherProtocol :: func clear()
+CheckpointMatcherProtocol :: func count() -> UInt32
+CheckpointMatcherProtocol :: func findTopMatches(queryHashes: [UInt32], maxResults: UInt32) -> [MatchResult]
+CheckpointMatcherProtocol :: func setDrift(maxDrift: UInt32)
+public final class CheckpointMatcher: CheckpointMatcherProtocol, @unchecked Sendable
+CheckpointMatcher :: public struct NoPointer: Sendable
+CheckpointMatcher.NoPointer :: public init()
+CheckpointMatcher :: public required init(unsafeFromRawPointer pointer: UnsafeMutableRawPointer)
+CheckpointMatcher :: public init(noPointer _: NoPointer)
+CheckpointMatcher :: public convenience init()
+CheckpointMatcher :: public func uniffiClonePointer() -> UnsafeMutableRawPointer
+CheckpointMatcher :: public static func withDrift(maxDrift: UInt32) -> CheckpointMatcher
+CheckpointMatcher :: public func add(timestamp: Float, hashes: [UInt32], duration: Float)
+CheckpointMatcher :: public func clear()
+CheckpointMatcher :: public func count() -> UInt32
+CheckpointMatcher :: public func findTopMatches(queryHashes: [UInt32], maxResults: UInt32) -> [MatchResult]
+CheckpointMatcher :: public func setDrift(maxDrift: UInt32)
+public protocol FingerprinterProtocol: AnyObject
+FingerprinterProtocol :: func fingerprintDataWindowed( data: Data, windowDurationMs: UInt32, windowIntervalMs: UInt32 ) throws(FingerprintError) -> [WindowedFingerprint]
+public final class Fingerprinter: FingerprinterProtocol, Sendable
+Fingerprinter :: public struct NoPointer: Sendable
+Fingerprinter.NoPointer :: public init()
+Fingerprinter :: public required init(unsafeFromRawPointer _: UnsafeMutableRawPointer)
+Fingerprinter :: public init(noPointer _: NoPointer)
+Fingerprinter :: public init()
+Fingerprinter :: public func uniffiClonePointer() -> UnsafeMutableRawPointer
+Fingerprinter :: public func fingerprintDataWindowed( data: Data, windowDurationMs: UInt32, windowIntervalMs: UInt32 ) throws(FingerprintError) -> [WindowedFingerprint]
+public protocol StreamingFingerprinterProtocol: AnyObject
+StreamingFingerprinterProtocol :: func durationMs() -> UInt32
+StreamingFingerprinterProtocol :: func flush() -> [UInt32]
+StreamingFingerprinterProtocol :: func pushSamples(samples: [Int16]) -> [UInt32]
+StreamingFingerprinterProtocol :: func pushSamplesF32(samples: [Float], channels: UInt16) -> [UInt32]
+StreamingFingerprinterProtocol :: func reset()
+public final class StreamingFingerprinter: StreamingFingerprinterProtocol, @unchecked Sendable
+StreamingFingerprinter :: public struct NoPointer: Sendable
+StreamingFingerprinter.NoPointer :: public init()
+StreamingFingerprinter :: public required init(unsafeFromRawPointer pointer: UnsafeMutableRawPointer)
+StreamingFingerprinter :: public init(noPointer _: NoPointer)
+StreamingFingerprinter :: public init(sampleRate: UInt32, channels: UInt16) throws(FingerprintError)
+StreamingFingerprinter :: public func uniffiClonePointer() -> UnsafeMutableRawPointer
+StreamingFingerprinter :: public func durationMs() -> UInt32
+StreamingFingerprinter :: public func flush() -> [UInt32]
+StreamingFingerprinter :: public func pushSamples(samples: [Int16]) -> [UInt32]
+StreamingFingerprinter :: public func pushSamplesF32(samples: [Float], channels: UInt16) -> [UInt32]
+StreamingFingerprinter :: public func reset()
+public protocol StreamingWindowedFingerprinterProtocol: AnyObject
+StreamingWindowedFingerprinterProtocol :: func durationMs() -> UInt32
+StreamingWindowedFingerprinterProtocol :: func flush() -> [WindowedFingerprint]
+StreamingWindowedFingerprinterProtocol :: func pushSamples(samples: [Int16]) -> [WindowedFingerprint]
+StreamingWindowedFingerprinterProtocol :: func pushSamplesF32(samples: [Float], channels: UInt16) -> [WindowedFingerprint]
+StreamingWindowedFingerprinterProtocol :: func reset()
+public final class StreamingWindowedFingerprinter: StreamingWindowedFingerprinterProtocol, @unchecked Sendable
+StreamingWindowedFingerprinter :: public struct NoPointer: Sendable
+StreamingWindowedFingerprinter.NoPointer :: public init()
+StreamingWindowedFingerprinter :: public required init(unsafeFromRawPointer pointer: UnsafeMutableRawPointer)
+StreamingWindowedFingerprinter :: public init(noPointer _: NoPointer)
+StreamingWindowedFingerprinter :: public init( sampleRate: UInt32, channels: UInt16, windowDurationMs: UInt32, windowIntervalMs: UInt32 ) throws(FingerprintError)
+StreamingWindowedFingerprinter :: public func uniffiClonePointer() -> UnsafeMutableRawPointer
+StreamingWindowedFingerprinter :: public func durationMs() -> UInt32
+StreamingWindowedFingerprinter :: public func flush() -> [WindowedFingerprint]
+StreamingWindowedFingerprinter :: public func pushSamples(samples: [Int16]) -> [WindowedFingerprint]
+StreamingWindowedFingerprinter :: public func pushSamplesF32(samples: [Float], channels: UInt16) -> [WindowedFingerprint]
+StreamingWindowedFingerprinter :: public func reset()
+public struct FingerprintData: Equatable, Hashable, Sendable
+FingerprintData :: public var hashes: [UInt32]
+FingerprintData :: public var durationMs: UInt32
+FingerprintData :: public init(hashes: [UInt32], durationMs: UInt32)
+public struct MatchResult: Equatable, Hashable, Sendable
+MatchResult :: public var timestamp: Float
+MatchResult :: public var score: Float
+MatchResult :: public init(timestamp: Float, score: Float)
+public struct WindowedFingerprint: Equatable, Hashable, Sendable
+WindowedFingerprint :: public var timestampMs: UInt32
+WindowedFingerprint :: public var durationMs: UInt32
+WindowedFingerprint :: public var hashes: [UInt32]
+WindowedFingerprint :: public init(timestampMs: UInt32, durationMs: UInt32, hashes: [UInt32])
+public enum FingerprintError: Error, Equatable, Hashable, Sendable
+FingerprintError :: case DecodeError(message: String)
+FingerprintError :: case UnsupportedFormat(message: String)
+FingerprintError :: case InvalidInput(message: String)
+FingerprintError :: case IoError(message: String)
+FingerprintError :: case InternalError(message: String)
+extension FingerprintError: LocalizedError
+FingerprintError :: public var errorDescription: String?
+public func compareHashes(hashes1: [UInt32], hashes2: [UInt32]) -> Float
+public func compareHashesWithDrift(hashes1: [UInt32], hashes2: [UInt32], maxDrift: UInt32) -> Float
+public func fingerprintFromBytes(data: Data) -> FingerprintData?
+public func fingerprintToBytes(hashes: [UInt32], durationMs: UInt32) -> Data
+public func fingerprintVersion() -> String

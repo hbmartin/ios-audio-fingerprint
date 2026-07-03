@@ -281,12 +281,16 @@ swift test --skip FingerprintBenchmarkTests
 ```
 
 CI runs `cargo fmt`/`clippy`/`test` for Rust and, on macOS, lints the Swift
-sources (`swift format lint --strict`), guards the public API surface against
-unreviewed breaking changes (`swift package diagnose-api-breaking-changes`,
-bypassed with the `api-change-approved` PR label), builds the xcframework,
-builds the Swift package with warnings as errors, runs the Swift tests, and
-compiles the package for iOS device and
+sources (`swift format lint --strict`), builds the xcframework, builds the
+Swift package with warnings as errors, runs the Swift tests, and compiles the
+package for iOS device and
 simulator. See `.github/workflows/`.
+
+The public API surface is pinned in `docs/public-api.txt`: CI fails if the
+extracted surface (`python3 scripts/check-public-api.py`) drifts from that
+baseline. Intentional API changes must regenerate it in the same PR
+(`python3 scripts/check-public-api.py --update`), which makes every API
+change an explicit, reviewable part of the diff.
 
 ## Benchmarks
 
