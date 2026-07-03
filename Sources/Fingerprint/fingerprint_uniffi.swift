@@ -1,5 +1,5 @@
-import FingerprintFFI
-import Foundation
+internal import FingerprintFFI
+public import Foundation
 
 public protocol CheckpointMatcherProtocol: AnyObject {
     func add(timestamp: Float, hashes: [UInt32], duration: Float)
@@ -9,19 +9,25 @@ public protocol CheckpointMatcherProtocol: AnyObject {
     func setDrift(maxDrift: UInt32)
 }
 
-open class CheckpointMatcher: CheckpointMatcherProtocol {
-    public struct NoPointer {
+/// Thread safety: `raw` is immutable after initialization and the Rust side
+/// guards all mutable state behind a `Mutex` (see fingerprint-ffi/src/lib.rs),
+/// so instances may be shared across concurrency domains.
+public final class CheckpointMatcher: CheckpointMatcherProtocol, @unchecked Sendable {
+    public struct NoPointer: Sendable {
         public init() {}
     }
 
-    private var raw: UnsafeMutableRawPointer?
+    private let raw: UnsafeMutableRawPointer
 
     public required init(unsafeFromRawPointer pointer: UnsafeMutableRawPointer) {
         raw = pointer
     }
 
     public init(noPointer _: NoPointer) {
-        raw = fingerprint_ffi_checkpoint_new(0)
+        guard let pointer = fingerprint_ffi_checkpoint_new(0) else {
+            preconditionFailure("fingerprint_ffi_checkpoint_new returned a null handle")
+        }
+        raw = pointer
     }
 
     public convenience init() {
@@ -29,55 +35,58 @@ open class CheckpointMatcher: CheckpointMatcherProtocol {
     }
 
     private init(maxDrift: UInt32) {
-        raw = fingerprint_ffi_checkpoint_new(maxDrift)
+        guard let pointer = fingerprint_ffi_checkpoint_new(maxDrift) else {
+            preconditionFailure("fingerprint_ffi_checkpoint_new returned a null handle")
+        }
+        raw = pointer
     }
 
     deinit {
-        if let raw {
-            fingerprint_ffi_checkpoint_free(raw)
-        }
+        fingerprint_ffi_checkpoint_free(raw)
     }
 
     public func uniffiClonePointer() -> UnsafeMutableRawPointer {
-        raw ?? UnsafeMutableRawPointer(Unmanaged.passUnretained(self).toOpaque())
+        raw
     }
 
     public static func withDrift(maxDrift: UInt32) -> CheckpointMatcher {
         CheckpointMatcher(maxDrift: maxDrift)
     }
 
-    open func add(timestamp: Float, hashes: [UInt32], duration: Float) {
+    public func add(timestamp: Float, hashes: [UInt32], duration: Float) {
         hashes.withUnsafeBufferPointer { buffer in
             fingerprint_ffi_checkpoint_add(raw, timestamp, buffer.baseAddress, buffer.count, duration)
         }
     }
 
-    open func clear() {
+    public func clear() {
         fingerprint_ffi_checkpoint_clear(raw)
     }
 
-    open func count() -> UInt32 {
+    public func count() -> UInt32 {
         fingerprint_ffi_checkpoint_count(raw)
     }
 
-    open func findTopMatches(queryHashes: [UInt32], maxResults: UInt32) -> [MatchResult] {
+    public func findTopMatches(queryHashes: [UInt32], maxResults: UInt32) -> [MatchResult] {
         let ffiMatches = queryHashes.withUnsafeBufferPointer { buffer in
             fingerprint_ffi_checkpoint_find_top_matches(raw, buffer.baseAddress, buffer.count, maxResults)
         }
         return takeMatchArray(ffiMatches)
     }
 
-    open func setDrift(maxDrift: UInt32) {
+    public func setDrift(maxDrift: UInt32) {
         fingerprint_ffi_checkpoint_set_drift(raw, maxDrift)
     }
 }
 
 public protocol FingerprinterProtocol: AnyObject {
-    func fingerprintDataWindowed(data: Data, windowDurationMs: UInt32, windowIntervalMs: UInt32) throws -> [WindowedFingerprint]
+    func fingerprintDataWindowed(
+        data: Data, windowDurationMs: UInt32, windowIntervalMs: UInt32
+    ) throws(FingerprintError) -> [WindowedFingerprint]
 }
 
-open class Fingerprinter: FingerprinterProtocol {
-    public struct NoPointer {
+public final class Fingerprinter: FingerprinterProtocol, Sendable {
+    public struct NoPointer: Sendable {
         public init() {}
     }
 
@@ -89,7 +98,9 @@ open class Fingerprinter: FingerprinterProtocol {
         UnsafeMutableRawPointer(Unmanaged.passUnretained(self).toOpaque())
     }
 
-    open func fingerprintDataWindowed(data: Data, windowDurationMs: UInt32, windowIntervalMs: UInt32) throws -> [WindowedFingerprint] {
+    public func fingerprintDataWindowed(
+        data: Data, windowDurationMs: UInt32, windowIntervalMs: UInt32
+    ) throws(FingerprintError) -> [WindowedFingerprint] {
         let result = data.withUnsafeBytes { rawBuffer in
             let pointer = rawBuffer.bindMemory(to: UInt8.self).baseAddress
             return fingerprint_ffi_fingerprint_data_windowed(pointer, rawBuffer.count, windowDurationMs, windowIntervalMs)
@@ -112,12 +123,15 @@ public protocol StreamingFingerprinterProtocol: AnyObject {
     func reset()
 }
 
-open class StreamingFingerprinter: StreamingFingerprinterProtocol {
-    public struct NoPointer {
+/// Thread safety: `raw` is immutable after initialization and the Rust side
+/// guards all mutable state behind a `Mutex` (see fingerprint-ffi/src/lib.rs),
+/// so instances may be shared across concurrency domains.
+public final class StreamingFingerprinter: StreamingFingerprinterProtocol, @unchecked Sendable {
+    public struct NoPointer: Sendable {
         public init() {}
     }
 
-    private var raw: UnsafeMutableRawPointer?
+    private let raw: UnsafeMutableRawPointer
 
     public required init(unsafeFromRawPointer pointer: UnsafeMutableRawPointer) {
         raw = pointer
@@ -131,47 +145,45 @@ open class StreamingFingerprinter: StreamingFingerprinterProtocol {
         }
     }
 
-    public init(sampleRate: UInt32, channels: UInt16) throws {
+    public init(sampleRate: UInt32, channels: UInt16) throws(FingerprintError) {
         raw = try Self.makeHandle(sampleRate: sampleRate, channels: channels)
     }
 
     deinit {
-        if let raw {
-            fingerprint_ffi_streaming_free(raw)
-        }
+        fingerprint_ffi_streaming_free(raw)
     }
 
     public func uniffiClonePointer() -> UnsafeMutableRawPointer {
-        raw ?? UnsafeMutableRawPointer(Unmanaged.passUnretained(self).toOpaque())
+        raw
     }
 
-    open func durationMs() -> UInt32 {
+    public func durationMs() -> UInt32 {
         fingerprint_ffi_streaming_duration_ms(raw)
     }
 
-    open func flush() -> [UInt32] {
+    public func flush() -> [UInt32] {
         takeU32Array(fingerprint_ffi_streaming_flush(raw))
     }
 
-    open func pushSamples(samples: [Int16]) -> [UInt32] {
+    public func pushSamples(samples: [Int16]) -> [UInt32] {
         let array = samples.withUnsafeBufferPointer { buffer in
             fingerprint_ffi_streaming_push_i16(raw, buffer.baseAddress, buffer.count)
         }
         return takeU32Array(array)
     }
 
-    open func pushSamplesF32(samples: [Float], channels: UInt16) -> [UInt32] {
+    public func pushSamplesF32(samples: [Float], channels: UInt16) -> [UInt32] {
         let array = samples.withUnsafeBufferPointer { buffer in
             fingerprint_ffi_streaming_push_f32(raw, buffer.baseAddress, buffer.count, channels)
         }
         return takeU32Array(array)
     }
 
-    open func reset() {
+    public func reset() {
         fingerprint_ffi_streaming_reset(raw)
     }
 
-    private static func makeHandle(sampleRate: UInt32, channels: UInt16) throws -> UnsafeMutableRawPointer {
+    private static func makeHandle(sampleRate: UInt32, channels: UInt16) throws(FingerprintError) -> UnsafeMutableRawPointer {
         try takeHandleResult(fingerprint_ffi_streaming_new(sampleRate, channels))
     }
 }
@@ -184,12 +196,15 @@ public protocol StreamingWindowedFingerprinterProtocol: AnyObject {
     func reset()
 }
 
-open class StreamingWindowedFingerprinter: StreamingWindowedFingerprinterProtocol {
-    public struct NoPointer {
+/// Thread safety: `raw` is immutable after initialization and the Rust side
+/// guards all mutable state behind a `Mutex` (see fingerprint-ffi/src/lib.rs),
+/// so instances may be shared across concurrency domains.
+public final class StreamingWindowedFingerprinter: StreamingWindowedFingerprinterProtocol, @unchecked Sendable {
+    public struct NoPointer: Sendable {
         public init() {}
     }
 
-    private var raw: UnsafeMutableRawPointer?
+    private let raw: UnsafeMutableRawPointer
 
     public required init(unsafeFromRawPointer pointer: UnsafeMutableRawPointer) {
         raw = pointer
@@ -213,7 +228,7 @@ open class StreamingWindowedFingerprinter: StreamingWindowedFingerprinterProtoco
         channels: UInt16,
         windowDurationMs: UInt32,
         windowIntervalMs: UInt32
-    ) throws {
+    ) throws(FingerprintError) {
         raw = try Self.makeHandle(
             sampleRate: sampleRate,
             channels: channels,
@@ -223,47 +238,47 @@ open class StreamingWindowedFingerprinter: StreamingWindowedFingerprinterProtoco
     }
 
     deinit {
-        if let raw {
-            fingerprint_ffi_streaming_windowed_free(raw)
-        }
+        fingerprint_ffi_streaming_windowed_free(raw)
     }
 
     public func uniffiClonePointer() -> UnsafeMutableRawPointer {
-        raw ?? UnsafeMutableRawPointer(Unmanaged.passUnretained(self).toOpaque())
+        raw
     }
 
-    open func durationMs() -> UInt32 {
+    public func durationMs() -> UInt32 {
         fingerprint_ffi_streaming_windowed_duration_ms(raw)
     }
 
-    open func flush() -> [WindowedFingerprint] {
+    public func flush() -> [WindowedFingerprint] {
         takeWindowedArray(fingerprint_ffi_streaming_windowed_flush(raw))
     }
 
-    open func pushSamples(samples: [Int16]) -> [WindowedFingerprint] {
+    public func pushSamples(samples: [Int16]) -> [WindowedFingerprint] {
         let windows = samples.withUnsafeBufferPointer { buffer in
             fingerprint_ffi_streaming_windowed_push_i16(raw, buffer.baseAddress, buffer.count)
         }
         return takeWindowedArray(windows)
     }
 
-    open func pushSamplesF32(samples: [Float], channels: UInt16) -> [WindowedFingerprint] {
+    public func pushSamplesF32(samples: [Float], channels: UInt16) -> [WindowedFingerprint] {
         let windows = samples.withUnsafeBufferPointer { buffer in
             fingerprint_ffi_streaming_windowed_push_f32(raw, buffer.baseAddress, buffer.count, channels)
         }
         return takeWindowedArray(windows)
     }
 
-    open func reset() {
+    public func reset() {
         fingerprint_ffi_streaming_windowed_reset(raw)
     }
 
-    private static func makeHandle(sampleRate: UInt32, channels: UInt16, windowDurationMs: UInt32, windowIntervalMs: UInt32) throws -> UnsafeMutableRawPointer {
+    private static func makeHandle(
+        sampleRate: UInt32, channels: UInt16, windowDurationMs: UInt32, windowIntervalMs: UInt32
+    ) throws(FingerprintError) -> UnsafeMutableRawPointer {
         try takeHandleResult(fingerprint_ffi_streaming_windowed_new(sampleRate, channels, windowDurationMs, windowIntervalMs))
     }
 }
 
-public struct FingerprintData: Equatable, Hashable {
+public struct FingerprintData: Equatable, Hashable, Sendable {
     public var hashes: [UInt32]
     public var durationMs: UInt32
 
@@ -273,7 +288,7 @@ public struct FingerprintData: Equatable, Hashable {
     }
 }
 
-public struct MatchResult: Equatable, Hashable {
+public struct MatchResult: Equatable, Hashable, Sendable {
     public var timestamp: Float
     public var score: Float
 
@@ -283,7 +298,7 @@ public struct MatchResult: Equatable, Hashable {
     }
 }
 
-public struct WindowedFingerprint: Equatable, Hashable {
+public struct WindowedFingerprint: Equatable, Hashable, Sendable {
     public var timestampMs: UInt32
     public var durationMs: UInt32
     public var hashes: [UInt32]
@@ -295,7 +310,7 @@ public struct WindowedFingerprint: Equatable, Hashable {
     }
 }
 
-public enum FingerprintError: Error, Equatable, Hashable {
+public enum FingerprintError: Error, Equatable, Hashable, Sendable {
     case DecodeError(message: String)
     case UnsupportedFormat(message: String)
     case InvalidInput(message: String)
@@ -307,10 +322,10 @@ extension FingerprintError: LocalizedError {
     public var errorDescription: String? {
         switch self {
         case let .DecodeError(message),
-             let .UnsupportedFormat(message),
-             let .InvalidInput(message),
-             let .IoError(message),
-             let .InternalError(message):
+            let .UnsupportedFormat(message),
+            let .InvalidInput(message),
+            let .IoError(message),
+            let .InternalError(message):
             return message
         }
     }
@@ -407,7 +422,7 @@ private func takeWindowedArray(_ array: FingerprintFfiWindowedArray) -> [Windowe
     }
 }
 
-private func takeHandleResult(_ result: FingerprintFfiHandleResult) throws -> UnsafeMutableRawPointer {
+private func takeHandleResult(_ result: FingerprintFfiHandleResult) throws(FingerprintError) -> UnsafeMutableRawPointer {
     if result.status != 0 {
         throw takeError(status: result.status, message: result.message)
     }

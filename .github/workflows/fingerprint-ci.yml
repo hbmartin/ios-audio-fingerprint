@@ -6,6 +6,7 @@ on:
     branches:
       - main
       - rust-rewrite
+      - claude/**
   workflow_dispatch:
 
 permissions:
@@ -16,6 +17,33 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  swift-lint:
+    name: Lint Swift package
+    runs-on: macos-26
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+        with:
+          persist-credentials: false
+
+      - name: Assert Swift 6.2+ toolchain
+        run: scripts/assert-swift-toolchain.sh
+
+      - name: Lint Swift sources
+        run: swift format lint --strict --parallel --recursive Package.swift Sources Tests Benchmarks
+
+  api-stability:
+    name: Public API stability
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+        with:
+          persist-credentials: false
+
+      - name: Check public API surface against baseline
+        run: python3 scripts/check-public-api.py
+
   build:
     name: Build and test Fingerprint
     runs-on: macos-26
@@ -35,6 +63,9 @@ jobs:
         run: |
           xcodebuild -version
           swift --version
+
+      - name: Assert Swift 6.2+ toolchain
+        run: scripts/assert-swift-toolchain.sh
 
       - name: Install Rust stable and Apple targets
         run: |
@@ -72,8 +103,11 @@ jobs:
       - name: Zip Fingerprint xcframework
         run: ditto -c -k --keepParent Fingerprint.xcframework Fingerprint.xcframework.zip
 
+      - name: Build Swift package (warnings as errors)
+        run: swift build --build-tests -Xswiftc -warnings-as-errors
+
       - name: Test Swift package on macOS
-        run: swift test --filter 'FingerprintTests\.FingerprintTests'
+        run: swift test --skip FingerprintBenchmarkTests -Xswiftc -warnings-as-errors
 
       - name: Build Swift package for iOS device
         run: |

@@ -1,0 +1,15 @@
+{
+  "version": 1,
+  "lineLength": 140,
+  "indentation": {
+    "spaces": 4
+  },
+  "maximumBlankLines": 1,
+  "respectsExistingLineBreaks": true,
+  "rules": {
+    "AlwaysUseLowerCamelCase": false,
+    "NeverForceUnwrap": false,
+    "OrderedImports": true,
+    "UseSynthesizedInitializer": false
+  }
+}

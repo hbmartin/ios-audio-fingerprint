@@ -11,6 +11,7 @@ inside a longer recording — one-shot from encoded files, or incrementally from
 live PCM stream.
 
 - **Platforms:** iOS 13+, macOS 13+
+- **Requirements:** Swift 6.2+ toolchain (Xcode 26+); the package uses the Swift 6 language mode
 - **Distribution:** Swift Package Manager (binary xcframework + thin Swift facade)
 - **License:** [Mozilla Public License 2.0](LICENSE.md)
 
@@ -274,14 +275,22 @@ and checksum (see [Releasing](#releasing)).
 # Rust workspace (unit + behavior tests, closest to the implementation)
 cargo test --manifest-path rust/Cargo.toml --workspace --locked
 
-# Swift package tests (serialization, comparison/drift, matching,
+# Swift package tests (Swift Testing; serialization, comparison/drift, matching,
 # streaming, constructor validation, windowed WAV fingerprinting)
-swift test --filter 'FingerprintTests\.FingerprintTests'
+swift test --skip FingerprintBenchmarkTests
 ```
 
-CI runs `cargo fmt`/`clippy`/`test` for Rust and, on macOS, builds the
-xcframework, runs the Swift tests, and compiles the package for iOS device and
+CI runs `cargo fmt`/`clippy`/`test` for Rust and, on macOS, lints the Swift
+sources (`swift format lint --strict`), builds the xcframework, builds the
+Swift package with warnings as errors, runs the Swift tests, and compiles the
+package for iOS device and
 simulator. See `.github/workflows/`.
+
+The public API surface is pinned in `docs/public-api.txt`: CI fails if the
+extracted surface (`python3 scripts/check-public-api.py`) drifts from that
+baseline. Intentional API changes must regenerate it in the same PR
+(`python3 scripts/check-public-api.py --update`), which makes every API
+change an explicit, reviewable part of the diff.
 
 ## Benchmarks
 
