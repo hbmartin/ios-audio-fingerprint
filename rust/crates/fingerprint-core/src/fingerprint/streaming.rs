@@ -1,36 +1,50 @@
 use std::collections::VecDeque;
 
 use crate::audio::resampler::{
-    resample_to_mono, samples_for_milliseconds, validate_audio_shape, TARGET_SAMPLE_RATE,
+    downmix_i16_to_mono, downmix_to_mono, samples_for_milliseconds, validate_audio_shape,
+    StreamResampler, TARGET_SAMPLE_RATE,
 };
 use crate::error::FingerprintError;
 use crate::fingerprint::encoder::compute_hash;
 use crate::fingerprint::fft::FftProcessor;
 use crate::fingerprint::{
-    duration_ms_for_samples, fingerprint_samples_with, FRAME_SIZE, HASH_FRAME_COUNT,
+    duration_ms_for_samples, encoder::encode_chroma_frames, FRAME_SIZE, HASH_FRAME_COUNT,
     HASH_STRIDE_FRAMES, HOP_SIZE, PITCH_CLASSES,
 };
 
 use super::WindowedFingerprint;
 
 pub struct StreamingFingerprinter {
-    sample_rate: u32,
     channels: u16,
-    buffer: VecDeque<f32>,
+    /// `None` when the source is already at [`TARGET_SAMPLE_RATE`]; otherwise a
+    /// stateful resampler whose filter context carries across pushes.
+    resampler: Option<StreamResampler>,
+    /// Target-rate samples not yet consumed by framing; the front sits on the
+    /// global `HOP_SIZE` grid.
+    pending: Vec<f32>,
     chroma_frames: VecDeque<[f32; PITCH_CLASSES]>,
     total_samples_at_target_rate: usize,
     fft: FftProcessor,
 }
 
 pub struct StreamingWindowedFingerprinter {
-    sample_rate: u32,
     channels: u16,
     window_duration_ms: u32,
-    window_interval_ms: u32,
-    samples_at_target_rate: VecDeque<f32>,
-    buffer_start_sample: usize,
+    window_samples: usize,
+    interval_samples: usize,
+    resampler: Option<StreamResampler>,
+    /// Target-rate samples awaiting framing; `pending[0]` has global sample
+    /// index `frames_computed * HOP_SIZE`.
+    pending: Vec<f32>,
+    /// Retained chroma frames; `frames[0]` has global frame index
+    /// `first_frame_index`. Storing frames instead of raw samples shrinks the
+    /// buffered state from one window of PCM to `PITCH_CLASSES` floats per
+    /// `HOP_SIZE` samples.
+    frames: VecDeque<[f32; PITCH_CLASSES]>,
+    first_frame_index: usize,
+    frames_computed: usize,
     next_window_start: usize,
-    total_samples_seen_at_target_rate: usize,
+    total_samples_at_target_rate: usize,
     fft: FftProcessor,
 }
 
@@ -38,9 +52,9 @@ impl StreamingFingerprinter {
     pub fn new(sample_rate: u32, channels: u16) -> Result<Self, FingerprintError> {
         validate_audio_shape(sample_rate, channels)?;
         Ok(Self {
-            sample_rate,
             channels,
-            buffer: VecDeque::new(),
+            resampler: stream_resampler_for(sample_rate),
+            pending: Vec::new(),
             chroma_frames: VecDeque::new(),
             total_samples_at_target_rate: 0,
             fft: FftProcessor::new(TARGET_SAMPLE_RATE),
@@ -52,15 +66,16 @@ impl StreamingFingerprinter {
     }
 
     pub fn push_samples(&mut self, samples: &[i16]) -> Vec<u32> {
-        let floats: Vec<f32> = samples
-            .iter()
-            .map(|sample| *sample as f32 / 32_768.0)
-            .collect();
-        self.push_interleaved_f32(&floats, self.channels)
+        let mono = downmix_i16_to_mono(samples, self.channels);
+        self.ingest(mono)
     }
 
     pub fn push_samples_f32(&mut self, samples: &[f32], channels: u16) -> Vec<u32> {
-        self.push_interleaved_f32(samples, channels)
+        if channels == 0 {
+            return Vec::new();
+        }
+        let mono = downmix_to_mono(samples, channels);
+        self.ingest(mono)
     }
 
     pub fn flush(&mut self) -> Vec<u32> {
@@ -68,41 +83,32 @@ impl StreamingFingerprinter {
     }
 
     pub fn reset(&mut self) {
-        self.buffer.clear();
+        if let Some(resampler) = &mut self.resampler {
+            resampler.reset();
+        }
+        self.pending.clear();
         self.chroma_frames.clear();
         self.total_samples_at_target_rate = 0;
     }
 
-    fn push_interleaved_f32(&mut self, samples: &[f32], channels: u16) -> Vec<u32> {
-        if channels == 0 || self.sample_rate == 0 {
-            return Vec::new();
-        }
-
-        let mono = resample_to_mono(samples, self.sample_rate, channels);
-        self.total_samples_at_target_rate =
-            self.total_samples_at_target_rate.saturating_add(mono.len());
-        self.buffer.extend(mono);
-        self.process_buffer();
+    fn ingest(&mut self, mono: Vec<f32>) -> Vec<u32> {
+        let at_target_rate = match &mut self.resampler {
+            Some(resampler) => resampler.push(&mono),
+            None => mono,
+        };
+        self.total_samples_at_target_rate = self
+            .total_samples_at_target_rate
+            .saturating_add(at_target_rate.len());
+        self.pending.extend(at_target_rate);
+        self.process_pending();
         self.emit_hashes()
     }
 
-    fn process_buffer(&mut self) {
-        while self.buffer.len() >= FRAME_SIZE {
-            let (first, second) = self.buffer.as_slices();
-            let mut frame = [0.0f32; FRAME_SIZE];
-            if first.len() >= FRAME_SIZE {
-                frame.copy_from_slice(&first[..FRAME_SIZE]);
-            } else {
-                frame[..first.len()].copy_from_slice(first);
-                let remaining = FRAME_SIZE - first.len();
-                frame[first.len()..].copy_from_slice(&second[..remaining]);
-            }
-
-            let chroma = self.fft.process_to_chroma(&frame);
+    fn process_pending(&mut self) {
+        while self.pending.len() >= FRAME_SIZE {
+            let chroma = self.fft.process_to_chroma(&self.pending[..FRAME_SIZE]);
             self.chroma_frames.push_back(chroma);
-            for _ in 0..HOP_SIZE.min(self.buffer.len()) {
-                self.buffer.pop_front();
-            }
+            self.pending.drain(..HOP_SIZE);
         }
     }
 
@@ -120,9 +126,7 @@ impl StreamingFingerprinter {
             }
 
             hashes.push(compute_hash(&frames));
-            for _ in 0..HASH_STRIDE_FRAMES.min(self.chroma_frames.len()) {
-                self.chroma_frames.pop_front();
-            }
+            self.chroma_frames.drain(..HASH_STRIDE_FRAMES);
         }
         hashes
     }
@@ -150,32 +154,36 @@ impl StreamingWindowedFingerprinter {
         }
 
         Ok(Self {
-            sample_rate,
             channels,
             window_duration_ms,
-            window_interval_ms,
-            samples_at_target_rate: VecDeque::new(),
-            buffer_start_sample: 0,
+            window_samples,
+            interval_samples,
+            resampler: stream_resampler_for(sample_rate),
+            pending: Vec::new(),
+            frames: VecDeque::new(),
+            first_frame_index: 0,
+            frames_computed: 0,
             next_window_start: 0,
-            total_samples_seen_at_target_rate: 0,
+            total_samples_at_target_rate: 0,
             fft: FftProcessor::new(TARGET_SAMPLE_RATE),
         })
     }
 
     pub fn duration_ms(&self) -> u32 {
-        duration_ms_for_samples(self.total_samples_seen_at_target_rate)
+        duration_ms_for_samples(self.total_samples_at_target_rate)
     }
 
     pub fn push_samples(&mut self, samples: &[i16]) -> Vec<WindowedFingerprint> {
-        let floats: Vec<f32> = samples
-            .iter()
-            .map(|sample| *sample as f32 / 32_768.0)
-            .collect();
-        self.push_interleaved_f32(&floats, self.channels)
+        let mono = downmix_i16_to_mono(samples, self.channels);
+        self.ingest(mono)
     }
 
     pub fn push_samples_f32(&mut self, samples: &[f32], channels: u16) -> Vec<WindowedFingerprint> {
-        self.push_interleaved_f32(samples, channels)
+        if channels == 0 {
+            return Vec::new();
+        }
+        let mono = downmix_to_mono(samples, channels);
+        self.ingest(mono)
     }
 
     pub fn flush(&mut self) -> Vec<WindowedFingerprint> {
@@ -183,70 +191,87 @@ impl StreamingWindowedFingerprinter {
     }
 
     pub fn reset(&mut self) {
-        self.samples_at_target_rate.clear();
-        self.buffer_start_sample = 0;
+        if let Some(resampler) = &mut self.resampler {
+            resampler.reset();
+        }
+        self.pending.clear();
+        self.frames.clear();
+        self.first_frame_index = 0;
+        self.frames_computed = 0;
         self.next_window_start = 0;
-        self.total_samples_seen_at_target_rate = 0;
+        self.total_samples_at_target_rate = 0;
     }
 
-    fn push_interleaved_f32(&mut self, samples: &[f32], channels: u16) -> Vec<WindowedFingerprint> {
-        if channels == 0 || self.sample_rate == 0 {
-            return Vec::new();
-        }
-
-        let mono = resample_to_mono(samples, self.sample_rate, channels);
-        self.total_samples_seen_at_target_rate = self
-            .total_samples_seen_at_target_rate
-            .saturating_add(mono.len());
-        self.samples_at_target_rate.extend(mono);
+    fn ingest(&mut self, mono: Vec<f32>) -> Vec<WindowedFingerprint> {
+        let at_target_rate = match &mut self.resampler {
+            Some(resampler) => resampler.push(&mono),
+            None => mono,
+        };
+        self.total_samples_at_target_rate = self
+            .total_samples_at_target_rate
+            .saturating_add(at_target_rate.len());
+        self.pending.extend(at_target_rate);
+        self.process_pending();
         self.emit_windows()
     }
 
+    fn process_pending(&mut self) {
+        while self.pending.len() >= FRAME_SIZE {
+            let chroma = self.fft.process_to_chroma(&self.pending[..FRAME_SIZE]);
+            self.frames.push_back(chroma);
+            self.frames_computed += 1;
+            self.pending.drain(..HOP_SIZE);
+        }
+    }
+
+    /// Emit every window whose full sample span has arrived. Windows slice the
+    /// same global frame grid as the one-shot path (`fingerprint_windows`), so
+    /// the two produce identical hashes for identical input.
     fn emit_windows(&mut self) -> Vec<WindowedFingerprint> {
-        let window_samples = samples_for_milliseconds(self.window_duration_ms);
-        let interval_samples = samples_for_milliseconds(self.window_interval_ms);
-        if window_samples < FRAME_SIZE || interval_samples == 0 {
-            return Vec::new();
-        }
-
         let mut windows = Vec::new();
-        let available_end = self
-            .buffer_start_sample
-            .saturating_add(self.samples_at_target_rate.len());
-
-        let mut next_window_start = self.next_window_start;
-        if next_window_start.saturating_add(window_samples) <= available_end {
-            let contiguous = self.samples_at_target_rate.make_contiguous();
-            while next_window_start.saturating_add(window_samples) <= available_end {
-                let relative_start = next_window_start - self.buffer_start_sample;
-                let timestamp_ms = duration_ms_for_samples(next_window_start);
-                let window = &contiguous[relative_start..relative_start + window_samples];
-                let hashes =
-                    fingerprint_samples_with(&mut self.fft, window, self.window_duration_ms).hashes;
-                windows.push(WindowedFingerprint {
-                    timestamp_ms,
-                    duration_ms: self.window_duration_ms,
-                    hashes,
-                });
-                next_window_start = next_window_start.saturating_add(interval_samples);
-            }
+        while self.next_window_start.saturating_add(self.window_samples)
+            <= self.total_samples_at_target_rate
+        {
+            let start = self.next_window_start;
+            let first = start.div_ceil(HOP_SIZE);
+            let last = (start + self.window_samples - FRAME_SIZE) / HOP_SIZE;
+            let hashes = if first <= last {
+                // Every needed frame exists: `last * HOP_SIZE + FRAME_SIZE`
+                // lies within the received span, and frames below
+                // `first_frame_index` were only discarded once no future
+                // window could reference them.
+                let offset = first - self.first_frame_index;
+                let contiguous = self.frames.make_contiguous();
+                encode_chroma_frames(&contiguous[offset..=last - self.first_frame_index])
+            } else {
+                Vec::new()
+            };
+            windows.push(WindowedFingerprint {
+                timestamp_ms: duration_ms_for_samples(start),
+                duration_ms: self.window_duration_ms,
+                hashes,
+            });
+            self.next_window_start = self.next_window_start.saturating_add(self.interval_samples);
         }
-        self.next_window_start = next_window_start;
 
-        self.compact();
+        self.discard_unreachable_frames();
         windows
     }
 
-    fn compact(&mut self) {
-        if self.next_window_start <= self.buffer_start_sample {
-            return;
+    fn discard_unreachable_frames(&mut self) {
+        let needed_first = self.next_window_start.div_ceil(HOP_SIZE);
+        if needed_first > self.first_frame_index {
+            let discard = (needed_first - self.first_frame_index).min(self.frames.len());
+            self.frames.drain(..discard);
+            self.first_frame_index += discard;
         }
+    }
+}
 
-        let discard = (self.next_window_start - self.buffer_start_sample)
-            .min(self.samples_at_target_rate.len());
-        for _ in 0..discard {
-            self.samples_at_target_rate.pop_front();
-        }
-        self.buffer_start_sample += discard;
+fn stream_resampler_for(sample_rate: u32) -> Option<StreamResampler> {
+    if sample_rate == TARGET_SAMPLE_RATE {
+        None
+    } else {
+        Some(StreamResampler::new(sample_rate))
     }
 }

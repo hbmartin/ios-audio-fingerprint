@@ -170,15 +170,27 @@ All fingerprinting runs at `TARGET_SAMPLE_RATE = 11_025` Hz.
 - One channel is copied directly.
 - Multiple channels are averaged per frame.
 
-If the source sample rate differs from 11,025 Hz, a simple linear interpolating
-resampler is used. The output length is the floor of:
+If the source sample rate differs from 11,025 Hz, a polyphase windowed-sinc
+resampler is used (`ResampleKernel`): a Blackman-windowed sinc low-pass filter
+with 128 quantized phases, six sinc lobes per side, and unity-normalized DC
+gain per phase. When decimating, the cutoff sits below the target Nyquist
+frequency so out-of-band source content is attenuated instead of aliasing into
+the chroma band; when upsampling, the cutoff sits below the source Nyquist.
+Samples outside the input are treated as zero. The output length is the floor
+of:
 
 ```text
 input_frame_count / (source_sample_rate / 11_025)
 ```
 
-This is intentionally lightweight and deterministic. It is not a high quality
-anti-aliasing sample-rate converter.
+All coefficients are computed from the rate ratio alone with fixed arithmetic
+(including a fixed four-lane dot-product order), so resampling stays fully
+deterministic. The streaming paths hold a `StreamResampler` that keeps filter
+history across pushes: chunk boundaries introduce no phase resets, and a
+streamed signal resamples to the same values as the one-shot path wherever
+both have full context. The final few source samples of a stream (less than
+one filter half-width, under 1 ms) are only emitted once enough context
+arrives and are never zero-padded out.
 
 ## Fingerprint Algorithm
 
@@ -207,12 +219,14 @@ At 11,025 Hz:
 
 ### Frame Processing
 
-`FftProcessor` owns a reusable RustFFT plan, a Hann window, and a complex work
-buffer. Each frame is:
+`FftProcessor` owns a reusable real-to-complex FFT plan (`realfft`, backed by
+RustFFT), a Hann window, and reusable input/spectrum/scratch buffers. Audio
+frames are real-valued, so the real FFT does roughly half the work of the
+complex transform previously run on a zero-imaginary buffer. Each frame is:
 
 1. Zero-padded or truncated to `FRAME_SIZE` through indexed reads.
 2. Multiplied by the Hann window.
-3. Transformed with a forward FFT.
+3. Transformed with a forward real FFT.
 4. Reduced to magnitudes for bins `0...FRAME_SIZE / 2`.
 
 ### Chroma Extraction
@@ -266,12 +280,22 @@ It validates:
 - `window_duration_ms` must convert to at least `FRAME_SIZE` samples.
 - `window_interval_ms` must convert to a non-zero sample count.
 
+All windows are cut from one global short-time transform: chroma frame `j`
+covers samples `[j * HOP_SIZE, j * HOP_SIZE + FRAME_SIZE)` of the input, the
+frame stream is computed once, and each window hashes exactly the frames that
+lie fully inside `[start, start + window_samples)`. Overlapping windows
+therefore share their FFT work instead of recomputing it per window (with the
+default `parallel = off` build the frames are computed sequentially with one
+reused plan; with the `parallel` feature they are computed across CPU cores
+with identical output). Because window starts need not be hop-aligned, the
+number of hashes per window can vary by one between adjacent windows.
+
 If the input is shorter than one full window, it returns an empty array. For
 each complete window it returns:
 
 - `timestamp_ms`: the rounded timestamp of the window start.
 - `duration_ms`: the requested window duration.
-- `hashes`: the fingerprint for the window samples.
+- `hashes`: the fingerprint of the global chroma frames inside the window.
 
 Timestamps use rounded sample-to-millisecond conversion:
 
@@ -284,21 +308,23 @@ round(samples * 1_000 / 11_025)
 `StreamingFingerprinter` is for low-latency hash emission from raw PCM chunks.
 It stores:
 
-- Source sample rate and channel count.
-- A queue of target-rate mono samples.
+- The construction-time channel count.
+- A `StreamResampler` when the source rate differs from 11,025 Hz.
+- A buffer of target-rate mono samples not yet consumed by framing.
 - A queue of chroma frames that have not yet been encoded.
 - Total target-rate sample count for `duration_ms`.
 - A reusable `FftProcessor`.
 
 On each push:
 
-1. Convert `Int16` to normalized `f32` when needed.
-2. Downmix and resample to 11,025 Hz.
-3. Append mono samples to the sample queue.
-4. While at least one full frame is available, compute a chroma frame and pop
+1. Downmix to mono (the `Int16` path widens to normalized `f32` and downmixes
+   in a single pass).
+2. Resample to 11,025 Hz through the stateful resampler.
+3. Append mono samples to the pending buffer.
+4. While at least one full frame is available, compute a chroma frame and drain
    `HOP_SIZE` samples.
 5. While at least `HASH_FRAME_COUNT` chroma frames are available, compute one
-   hash and pop `HASH_STRIDE_FRAMES` chroma frames.
+   hash and drain `HASH_STRIDE_FRAMES` chroma frames.
 
 `flush()` only emits hashes that can be made from already queued complete chroma
 frames. It does not pad samples or synthesize partial hashes. The streaming path
@@ -311,24 +337,27 @@ stride-aligned.
 ## Streaming Windowed Fingerprinting
 
 `StreamingWindowedFingerprinter` emits full windows from raw PCM chunks. It
-stores:
+slices the same global chroma-frame grid as `fingerprint_windows`, so streamed
+windows are identical to one-shot windows for the same input. It stores:
 
-- Source sample rate and channel count.
-- Requested window duration and interval.
-- A queue of target-rate mono samples.
-- The absolute sample index represented by the front of the queue.
+- The construction-time channel count.
+- Requested window duration and interval (in ms and in samples).
+- A `StreamResampler` when the source rate differs from 11,025 Hz.
+- A buffer of target-rate samples not yet consumed by framing.
+- A queue of retained chroma frames plus the global index of its front —
+  buffered state is `PITCH_CLASSES` floats per `HOP_SIZE` samples instead of a
+  full window of raw PCM.
 - The next absolute sample index where a window should start.
 - Total target-rate sample count for `duration_ms`.
 
 On each push:
 
-1. Convert, downmix, and resample incoming samples.
-2. Append them to the target-rate sample queue.
-3. Emit every complete window whose end is now available.
-4. Fingerprint each window with the same one-shot `fingerprint_samples` path.
-5. Advance `next_window_start` by the window interval.
-6. Compact the queue by discarding samples that cannot be needed by future
-   windows.
+1. Downmix and resample incoming samples (stateful across pushes).
+2. Compute every newly completed global chroma frame.
+3. Emit every window whose full sample span has now arrived, hashing the
+   retained frames that lie inside it.
+4. Advance `next_window_start` by the window interval.
+5. Discard retained frames that no future window can reference.
 
 `flush()` emits only complete windows. It does not emit a partial final window.
 

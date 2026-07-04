@@ -11,7 +11,7 @@ resolver = "2"
 [workspace.package]
 edition = "2021"
 license = "MPL-2.0"
-version = "0.1.0"
+version = "0.2.0"
 
 # Optimize the shipped Fingerprint.xcframework. scripts/build-rust-xcframework.sh
 # builds fingerprint-ffi with `--release`, so these settings apply to every Apple

@@ -109,6 +109,12 @@ jobs:
       - name: Test Swift package on macOS
         run: swift test --skip FingerprintBenchmarkTests -Xswiftc -warnings-as-errors
 
+      # The facade's classes are `@unchecked Sendable` on the promise that the
+      # Rust side serializes all mutable state; run the suite (including the
+      # concurrent-push test) under ThreadSanitizer to hold that promise.
+      - name: Test Swift package with ThreadSanitizer
+        run: swift test --sanitize=thread --skip FingerprintBenchmarkTests
+
       - name: Build Swift package for iOS device
         run: |
           xcodebuild \

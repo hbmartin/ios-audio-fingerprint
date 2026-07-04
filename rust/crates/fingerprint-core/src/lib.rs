@@ -13,7 +13,7 @@ pub use fingerprint::{
 pub use matching::{compare_hashes, compare_hashes_with_drift, CheckpointMatcher, MatchResult};
 
 pub fn fingerprint_version() -> &'static str {
-    "fingerprint_core 0.1.0"
+    concat!("fingerprint_core ", env!("CARGO_PKG_VERSION"))
 }
 
 pub fn fingerprint_to_bytes(hashes: &[u32], duration_ms: u32) -> Vec<u8> {

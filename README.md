@@ -65,11 +65,15 @@ Swift API
 ```
 
 All fingerprinting runs at a fixed **11,025 Hz** mono target rate. Audio is
-downmixed and resampled, transformed with a 4096-sample Hann-windowed FFT
-(1024-sample hops), reduced to a normalized 12-bin **chroma** vector per frame,
-and encoded into 32-bit hashes. Each hash packs 28 bits of chroma-delta
-information plus a coarse energy nibble, spanning roughly one second of source
-audio.
+downmixed and resampled with an anti-aliasing polyphase windowed-sinc filter,
+transformed with a 4096-sample Hann-windowed real FFT (1024-sample hops),
+reduced to a normalized 12-bin **chroma** vector per frame, and encoded into
+32-bit hashes. Each hash packs 28 bits of chroma-delta information plus a
+coarse energy nibble, spanning roughly one second of source audio.
+
+Windowed fingerprints — one-shot and streaming — are cut from a single global
+frame grid: overlapping windows share their FFT work, and streaming windows
+match one-shot windows for identical input.
 
 The full algorithm — constants, decoding paths, streaming state machines,
 serialization format, matching, and the FFI memory-ownership contract — is
@@ -276,7 +280,8 @@ and checksum (see [Releasing](#releasing)).
 cargo test --manifest-path rust/Cargo.toml --workspace --locked
 
 # Swift package tests (Swift Testing; serialization, comparison/drift, matching,
-# streaming, constructor validation, windowed WAV fingerprinting)
+# streaming, constructor validation, windowed WAV fingerprinting, MP3 golden
+# hashes pinned against the Rust suite, concurrent-push thread safety)
 swift test --skip FingerprintBenchmarkTests
 ```
 

@@ -35,6 +35,7 @@ let package = Package(
         .testTarget(
             name: "FingerprintTests",
             dependencies: ["Fingerprint"],
+            resources: [.copy("Fixtures")],
             swiftSettings: swiftSettings
         ),
     ]
