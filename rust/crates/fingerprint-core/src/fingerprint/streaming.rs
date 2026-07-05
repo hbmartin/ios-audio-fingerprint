@@ -34,7 +34,7 @@ pub struct StreamingWindowedFingerprinter {
     interval_samples: usize,
     resampler: Option<StreamResampler>,
     /// Target-rate samples awaiting framing; `pending[0]` has global sample
-    /// index `frames_computed * HOP_SIZE`.
+    /// index `(first_frame_index + frames.len()) * HOP_SIZE`.
     pending: Vec<f32>,
     /// Retained chroma frames; `frames[0]` has global frame index
     /// `first_frame_index`. Storing frames instead of raw samples shrinks the
@@ -42,7 +42,6 @@ pub struct StreamingWindowedFingerprinter {
     /// `HOP_SIZE` samples.
     frames: VecDeque<[f32; PITCH_CLASSES]>,
     first_frame_index: usize,
-    frames_computed: usize,
     next_window_start: usize,
     total_samples_at_target_rate: usize,
     fft: FftProcessor,
@@ -53,7 +52,7 @@ impl StreamingFingerprinter {
         validate_audio_shape(sample_rate, channels)?;
         Ok(Self {
             channels,
-            resampler: stream_resampler_for(sample_rate),
+            resampler: stream_resampler_for(sample_rate)?,
             pending: Vec::new(),
             chroma_frames: VecDeque::new(),
             total_samples_at_target_rate: 0,
@@ -79,6 +78,14 @@ impl StreamingFingerprinter {
     }
 
     pub fn flush(&mut self) -> Vec<u32> {
+        if let Some(resampler) = &mut self.resampler {
+            let at_target_rate = resampler.flush();
+            self.total_samples_at_target_rate = self
+                .total_samples_at_target_rate
+                .saturating_add(at_target_rate.len());
+            self.pending.extend(at_target_rate);
+            self.process_pending();
+        }
         self.emit_hashes()
     }
 
@@ -105,10 +112,16 @@ impl StreamingFingerprinter {
     }
 
     fn process_pending(&mut self) {
-        while self.pending.len() >= FRAME_SIZE {
-            let chroma = self.fft.process_to_chroma(&self.pending[..FRAME_SIZE]);
+        let mut offset = 0;
+        while offset + FRAME_SIZE <= self.pending.len() {
+            let chroma = self
+                .fft
+                .process_to_chroma(&self.pending[offset..offset + FRAME_SIZE]);
             self.chroma_frames.push_back(chroma);
-            self.pending.drain(..HOP_SIZE);
+            offset += HOP_SIZE;
+        }
+        if offset > 0 {
+            self.pending.drain(..offset);
         }
     }
 
@@ -158,11 +171,10 @@ impl StreamingWindowedFingerprinter {
             window_duration_ms,
             window_samples,
             interval_samples,
-            resampler: stream_resampler_for(sample_rate),
+            resampler: stream_resampler_for(sample_rate)?,
             pending: Vec::new(),
             frames: VecDeque::new(),
             first_frame_index: 0,
-            frames_computed: 0,
             next_window_start: 0,
             total_samples_at_target_rate: 0,
             fft: FftProcessor::new(TARGET_SAMPLE_RATE),
@@ -187,6 +199,14 @@ impl StreamingWindowedFingerprinter {
     }
 
     pub fn flush(&mut self) -> Vec<WindowedFingerprint> {
+        if let Some(resampler) = &mut self.resampler {
+            let at_target_rate = resampler.flush();
+            self.total_samples_at_target_rate = self
+                .total_samples_at_target_rate
+                .saturating_add(at_target_rate.len());
+            self.pending.extend(at_target_rate);
+            self.process_pending();
+        }
         self.emit_windows()
     }
 
@@ -197,7 +217,6 @@ impl StreamingWindowedFingerprinter {
         self.pending.clear();
         self.frames.clear();
         self.first_frame_index = 0;
-        self.frames_computed = 0;
         self.next_window_start = 0;
         self.total_samples_at_target_rate = 0;
     }
@@ -216,11 +235,16 @@ impl StreamingWindowedFingerprinter {
     }
 
     fn process_pending(&mut self) {
-        while self.pending.len() >= FRAME_SIZE {
-            let chroma = self.fft.process_to_chroma(&self.pending[..FRAME_SIZE]);
+        let mut offset = 0;
+        while offset + FRAME_SIZE <= self.pending.len() {
+            let chroma = self
+                .fft
+                .process_to_chroma(&self.pending[offset..offset + FRAME_SIZE]);
             self.frames.push_back(chroma);
-            self.frames_computed += 1;
-            self.pending.drain(..HOP_SIZE);
+            offset += HOP_SIZE;
+        }
+        if offset > 0 {
+            self.pending.drain(..offset);
         }
     }
 
@@ -268,10 +292,10 @@ impl StreamingWindowedFingerprinter {
     }
 }
 
-fn stream_resampler_for(sample_rate: u32) -> Option<StreamResampler> {
+fn stream_resampler_for(sample_rate: u32) -> Result<Option<StreamResampler>, FingerprintError> {
     if sample_rate == TARGET_SAMPLE_RATE {
-        None
+        Ok(None)
     } else {
-        Some(StreamResampler::new(sample_rate))
+        StreamResampler::new(sample_rate).map(Some)
     }
 }
