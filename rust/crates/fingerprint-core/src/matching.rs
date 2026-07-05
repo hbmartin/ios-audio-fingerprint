@@ -10,6 +10,8 @@ pub struct MatchResult {
 struct Checkpoint {
     timestamp: f32,
     hashes: Vec<u32>,
+    /// Carried through the public `add` API for callers' bookkeeping; scoring
+    /// is currently length-based and does not weight by duration.
     duration: f32,
 }
 
@@ -52,10 +54,20 @@ fn compare_at_offset(
         return 0.0;
     }
 
+    let first = &first[first_start..first_start + count];
+    let second = &second[second_start..second_start + count];
+
+    // Compare two hashes per popcount by packing adjacent u32 pairs into u64s.
+    let mut first_pairs = first.chunks_exact(2);
+    let mut second_pairs = second.chunks_exact(2);
     let mut matching_bits = 0usize;
-    for index in 0..count {
-        matching_bits +=
-            (!(first[first_start + index] ^ second[second_start + index])).count_ones() as usize;
+    for (pair_a, pair_b) in (&mut first_pairs).zip(&mut second_pairs) {
+        let a = pair_a[0] as u64 | (pair_a[1] as u64) << 32;
+        let b = pair_b[0] as u64 | (pair_b[1] as u64) << 32;
+        matching_bits += (!(a ^ b)).count_ones() as usize;
+    }
+    for (a, b) in first_pairs.remainder().iter().zip(second_pairs.remainder()) {
+        matching_bits += (!(a ^ b)).count_ones() as usize;
     }
 
     matching_bits as f32 / (count * 32) as f32
@@ -118,14 +130,26 @@ impl CheckpointMatcher {
             })
             .collect();
 
-        scored.sort_by(|(left_index, left), (right_index, right)| {
+        let ordering = |(left_index, left): &(usize, MatchResult),
+                        (right_index, right): &(usize, MatchResult)|
+         -> Ordering {
             right
                 .score
                 .total_cmp(&left.score)
                 .then_with(|| left.timestamp.total_cmp(&right.timestamp))
                 .then_with(|| left_index.cmp(right_index))
-                .then(Ordering::Equal)
-        });
+        };
+
+        // Only the leading `max_results` entries are returned, so push the
+        // winners to the front with an O(n) selection and sort just that
+        // prefix. The comparator is a total order (the insertion index breaks
+        // every tie), so the result is identical to fully sorting.
+        let keep = (max_results as usize).min(scored.len());
+        if keep < scored.len() {
+            scored.select_nth_unstable_by(keep, ordering);
+            scored.truncate(keep);
+        }
+        scored.sort_by(ordering);
 
         scored
             .into_iter()

@@ -67,6 +67,15 @@ impl Fingerprinter {
     }
 }
 
+/// Fingerprint overlapping windows of `samples`.
+///
+/// All windows are cut from a single short-time transform over the input: the
+/// chroma frame at global index `j` covers samples `[j * HOP_SIZE,
+/// j * HOP_SIZE + FRAME_SIZE)`, and a window hashes exactly the frames that
+/// lie fully inside it. Each frame is therefore transformed once no matter
+/// how much consecutive windows overlap, instead of once per window that
+/// contains it, and the windowed streaming path slices the same global frame
+/// grid, so one-shot and streaming windows agree for identical input.
 pub fn fingerprint_windows(
     samples: &[f32],
     window_duration_ms: u32,
@@ -92,74 +101,93 @@ pub fn fingerprint_windows(
         .map(|step| step * interval_samples)
         .take_while(|&start| start + window_samples <= samples.len())
         .collect();
-
-    let fingerprint_window = |fft: &mut FftProcessor, start: usize| WindowedFingerprint {
-        timestamp_ms: duration_ms_for_samples(start),
-        duration_ms: window_duration_ms,
-        hashes: fingerprint_samples_with(
-            fft,
-            &samples[start..start + window_samples],
-            window_duration_ms,
-        )
-        .hashes,
+    let Some(&last_start) = starts.last() else {
+        return Ok(Vec::new());
     };
 
-    // Each window is independent, so the two paths produce identical output.
-    #[cfg(feature = "parallel")]
-    let windows = {
-        use rayon::prelude::*;
-        starts
-            .par_iter()
-            .map(|&start| {
-                // A per-window plan is unavoidable across threads, but amortized
-                // by the parallel speedup.
-                let mut fft = FftProcessor::new(TARGET_SAMPLE_RATE);
-                fingerprint_window(&mut fft, start)
-            })
-            .collect()
-    };
+    // Frames past the last window's end are never hashed, so stop there.
+    let needed_frames = (last_start + window_samples - FRAME_SIZE) / HOP_SIZE + 1;
+    let frames = compute_chroma_frames(samples, needed_frames);
 
-    #[cfg(not(feature = "parallel"))]
-    let windows = {
-        // One FFT plan (and Hann window / chroma table) reused across every window
-        // instead of rebuilt per window.
-        let mut fft = FftProcessor::new(TARGET_SAMPLE_RATE);
-        starts
-            .iter()
-            .map(|&start| fingerprint_window(&mut fft, start))
-            .collect()
-    };
+    let windows = starts
+        .into_iter()
+        .map(|start| {
+            let first = start.div_ceil(HOP_SIZE);
+            let last = (start + window_samples - FRAME_SIZE) / HOP_SIZE;
+            let hashes = if first <= last {
+                encode_chroma_frames(&frames[first..=last])
+            } else {
+                Vec::new()
+            };
+            WindowedFingerprint {
+                timestamp_ms: duration_ms_for_samples(start),
+                duration_ms: window_duration_ms,
+                hashes,
+            }
+        })
+        .collect();
 
     Ok(windows)
 }
 
 pub fn fingerprint_samples(samples: &[f32], duration_ms: u32) -> Fingerprint {
     let mut fft = FftProcessor::new(TARGET_SAMPLE_RATE);
-    fingerprint_samples_with(&mut fft, samples, duration_ms)
+    let frames = compute_chroma_frames_with(&mut fft, samples, usize::MAX);
+    Fingerprint {
+        hashes: encode_chroma_frames(&frames),
+        duration_ms,
+    }
 }
 
-/// Fingerprint one window of samples using a caller-provided [`FftProcessor`].
+/// Chroma frames at every complete `HOP_SIZE` offset of `samples`, capped at
+/// `frame_limit` frames.
 ///
-/// Callers that fingerprint many windows (one-shot windowing and the windowed
-/// streaming path) share a single processor so the FFT plan, Hann window, and
-/// chroma table are built once rather than per window. The output is identical
-/// to constructing a fresh processor because the processor carries no state
-/// between frames.
-pub(crate) fn fingerprint_samples_with(
+/// Frames are independent of each other, so the parallel and sequential
+/// implementations produce identical output; the parallel path amortizes plan
+/// construction across rayon's splits via `map_init` rather than building a
+/// processor per frame.
+#[cfg(feature = "parallel")]
+fn compute_chroma_frames(samples: &[f32], frame_limit: usize) -> Vec<[f32; PITCH_CLASSES]> {
+    use rayon::prelude::*;
+
+    let available = complete_frame_count(samples.len()).min(frame_limit);
+    (0..available)
+        .into_par_iter()
+        .map_init(
+            || FftProcessor::new(TARGET_SAMPLE_RATE),
+            |fft, index| {
+                let offset = index * HOP_SIZE;
+                fft.process_to_chroma(&samples[offset..offset + FRAME_SIZE])
+            },
+        )
+        .collect()
+}
+
+#[cfg(not(feature = "parallel"))]
+fn compute_chroma_frames(samples: &[f32], frame_limit: usize) -> Vec<[f32; PITCH_CLASSES]> {
+    let mut fft = FftProcessor::new(TARGET_SAMPLE_RATE);
+    compute_chroma_frames_with(&mut fft, samples, frame_limit)
+}
+
+fn compute_chroma_frames_with(
     fft: &mut FftProcessor,
     samples: &[f32],
-    duration_ms: u32,
-) -> Fingerprint {
-    let mut chroma_frames = Vec::new();
-    let mut offset = 0usize;
-    while offset + FRAME_SIZE <= samples.len() {
-        chroma_frames.push(fft.process_to_chroma(&samples[offset..offset + FRAME_SIZE]));
-        offset += HOP_SIZE;
-    }
+    frame_limit: usize,
+) -> Vec<[f32; PITCH_CLASSES]> {
+    let available = complete_frame_count(samples.len()).min(frame_limit);
+    (0..available)
+        .map(|index| {
+            let offset = index * HOP_SIZE;
+            fft.process_to_chroma(&samples[offset..offset + FRAME_SIZE])
+        })
+        .collect()
+}
 
-    Fingerprint {
-        hashes: encode_chroma_frames(&chroma_frames),
-        duration_ms,
+fn complete_frame_count(sample_count: usize) -> usize {
+    if sample_count < FRAME_SIZE {
+        0
+    } else {
+        (sample_count - FRAME_SIZE) / HOP_SIZE + 1
     }
 }
 

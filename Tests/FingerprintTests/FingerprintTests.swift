@@ -59,6 +59,27 @@ struct FingerprintTests {
         #expect(fingerprinter.durationMs() == 2_000)
     }
 
+    /// The streaming classes advertise cross-domain sharing (the Rust side owns a `Mutex`), so
+    /// exercise a shared instance from concurrent tasks. Runs under ThreadSanitizer in CI.
+    @Test
+    func concurrentPushesToSharedStreamerAreSafe() async throws {
+        let fingerprinter = try StreamingFingerprinter(sampleRate: 44_100, channels: 1)
+        let samples = [Float](repeating: 0.25, count: 8_192)
+
+        await withTaskGroup(of: Void.self) { group in
+            for _ in 0..<8 {
+                group.addTask {
+                    for _ in 0..<16 {
+                        _ = fingerprinter.pushSamplesF32(samples: samples, channels: 1)
+                    }
+                }
+            }
+        }
+        _ = fingerprinter.flush()
+
+        #expect(fingerprinter.durationMs() > 0)
+    }
+
     @Test
     func streamingInitializersThrowInvalidInputs() {
         #expect(throws: FingerprintError.InvalidInput(message: "sample rate must be greater than 0")) {
@@ -73,6 +94,39 @@ struct FingerprintTests {
                 windowIntervalMs: 500
             )
         }
+    }
+
+    /// Golden hashes for `Fixtures/reference.mp3`, pinned to the same values as
+    /// `decoded_mp3_windows_match_golden` in the Rust golden suite
+    /// (rust/crates/fingerprint-core/tests/golden.rs). The constants were
+    /// captured on aarch64; regenerate them together with the Rust goldens
+    /// after an intentional algorithm change (`emit_golden`).
+    private static let goldenMp3Hashes: [UInt32] = [
+        0xa070_01fc, 0x8ec0_3e00, 0x8001_801e, 0x7003_0018, 0x680e_0030, 0x6030_0188, 0x71c0_0600,
+    ]
+
+    @Test
+    func mp3FixtureMatchesRustGoldenHashes() throws {
+        let url = try #require(
+            Bundle.module.url(forResource: "reference", withExtension: "mp3", subdirectory: "Fixtures")
+        )
+        let data = try Data(contentsOf: url)
+        let windows = try Fingerprinter().fingerprintDataWindowed(
+            data: data,
+            windowDurationMs: 1_500,
+            windowIntervalMs: 500
+        )
+        let hashes = windows.flatMap(\.hashes)
+
+        #expect(windows.count == 2)
+        #expect(hashes.count == Self.goldenMp3Hashes.count)
+        // rustfft may pick different SIMD kernels per architecture, so require
+        // near-identity everywhere and exact equality on the reference
+        // architecture (mirroring the Rust golden suite's policy).
+        #expect(compareHashes(hashes1: hashes, hashes2: Self.goldenMp3Hashes) >= 0.99)
+        #if arch(arm64)
+            #expect(hashes == Self.goldenMp3Hashes)
+        #endif
     }
 
     @Test

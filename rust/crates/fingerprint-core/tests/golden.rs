@@ -47,18 +47,18 @@ const GOLDEN_SAMPLES_DATA: [u32; 12] = [
 ];
 
 const GOLDEN_WINDOWS: &[u32] = &GOLDEN_WINDOWS_DATA;
-const GOLDEN_WINDOWS_DATA: [u32; 32] = [
-    0x907003f0, 0x8c817c00, 0x9001800c, 0x70030018, 0x60070030, 0x503001c0, 0x71e00200, 0x61801e00,
-    0x61001c00, 0x6c016001, 0x6800800c, 0x50008008, 0x60010008, 0x50060030, 0x500d0040, 0x600800d0,
-    0x60100080, 0x50300110, 0x60400200, 0x40400400, 0x40400400, 0x51000800, 0x42001001, 0x52002001,
-    0x62002003, 0x54014002, 0x58000004, 0x48018000, 0x48018008, 0x60010018, 0x50020010, 0x40020020,
+const GOLDEN_WINDOWS_DATA: [u32; 26] = [
+    0x907003f0, 0x8c817c00, 0x9001800c, 0x70030018, 0x601e0030, 0x70300100, 0x71c01600, 0x63001c01,
+    0x6c016003, 0x7800800c, 0x60030018, 0x60040020, 0x600800d0, 0x60110080, 0x60200100, 0x50400400,
+    0x50c00400, 0x51000800, 0x42003001, 0x52002003, 0x50002002, 0x50004000, 0x58008000, 0x40008008,
+    0x50010010, 0x50020010,
 ];
 const GOLDEN_WINDOWS_COUNT: usize = 8;
 const GOLDEN_WINDOWS_TIMESTAMPS: &[u32] = &[0, 500, 1000, 1500, 2000, 2500, 3000, 3500];
 
 const GOLDEN_DECODED: &[u32] = &GOLDEN_DECODED_DATA;
-const GOLDEN_DECODED_DATA: [u32; 8] = [
-    0x907003f0, 0x8c817c00, 0x9001800c, 0x70030018, 0x60070030, 0x503001c0, 0x71e00200, 0x61801e00,
+const GOLDEN_DECODED_DATA: [u32; 7] = [
+    0x907003f0, 0x8c817c00, 0x9001800c, 0x70030018, 0x601e0030, 0x70300100, 0x71c01600,
 ];
 
 const GOLDEN_STREAMING: &[u32] = &GOLDEN_STREAMING_DATA;
@@ -66,6 +66,12 @@ const GOLDEN_STREAMING_DATA: [u32; 11] = [
     0x907003f0, 0x8c817c00, 0x9001800c, 0x601e0030, 0x70300100, 0x71c01600, 0x66003001, 0x5800c016,
     0x50018008, 0x50020030, 0x500d0040,
 ];
+
+const GOLDEN_MP3: &[u32] = &GOLDEN_MP3_DATA;
+const GOLDEN_MP3_DATA: [u32; 7] = [
+    0xa07001fc, 0x8ec03e00, 0x8001801e, 0x70030018, 0x680e0030, 0x60300188, 0x71c00600,
+];
+const GOLDEN_MP3_WINDOW_COUNT: usize = 2;
 
 // ---------------------------------------------------------------------------
 // Deterministic signal + container generators.
@@ -154,6 +160,24 @@ fn produce_streaming() -> Vec<u32> {
     hashes
 }
 
+/// The committed MP3 fixture (see `scripts/generate-mp3-fixture.py`) carries
+/// the same reference signal as `reference_wave`, LAME-encoded at 128 kbps
+/// CBR. This is the only always-on coverage of the Symphonia MP3 decode path
+/// with real MPEG audio; the same bytes and hashes are also pinned by the
+/// Swift test suite, which exercises the path through the FFI.
+fn produce_mp3() -> (Vec<u32>, usize) {
+    let mp3 = include_bytes!("fixtures/reference.mp3");
+    let windows = Fingerprinter::new()
+        .fingerprint_data_windowed(mp3, 1_500, 500)
+        .unwrap();
+    let count = windows.len();
+    let hashes = windows
+        .into_iter()
+        .flat_map(|window| window.hashes)
+        .collect();
+    (hashes, count)
+}
+
 // ---------------------------------------------------------------------------
 // Assertions.
 // ---------------------------------------------------------------------------
@@ -213,6 +237,13 @@ fn streaming_matches_golden() {
 }
 
 #[test]
+fn decoded_mp3_windows_match_golden() {
+    let (hashes, count) = produce_mp3();
+    assert_eq!(count, GOLDEN_MP3_WINDOW_COUNT, "MP3 window count drifted");
+    assert_golden("fingerprint mp3", &hashes, GOLDEN_MP3);
+}
+
+#[test]
 fn fingerprinting_is_deterministic() {
     // Independent of the committed goldens: the same input must always produce
     // the same output within a single build.
@@ -220,6 +251,7 @@ fn fingerprinting_is_deterministic() {
     assert_eq!(produce_windows().0, produce_windows().0);
     assert_eq!(produce_decoded(), produce_decoded());
     assert_eq!(produce_streaming(), produce_streaming());
+    assert_eq!(produce_mp3(), produce_mp3());
 }
 
 /// Prints the golden constants for this file. Ignored by default; run manually
@@ -240,6 +272,7 @@ fn emit_golden() {
     let (windows, window_count, timestamps) = produce_windows();
     let decoded = produce_decoded();
     let streaming = produce_streaming();
+    let (mp3, mp3_window_count) = produce_mp3();
 
     println!("\n// ---- paste below into golden.rs ----");
     print_array("GOLDEN_SAMPLES", &samples);
@@ -248,5 +281,7 @@ fn emit_golden() {
     println!("const GOLDEN_WINDOWS_TIMESTAMPS: &[u32] = &{timestamps:?};");
     print_array("GOLDEN_DECODED", &decoded);
     print_array("GOLDEN_STREAMING", &streaming);
+    print_array("GOLDEN_MP3", &mp3);
+    println!("const GOLDEN_MP3_WINDOW_COUNT: usize = {mp3_window_count};");
     println!("// ---- end paste ----\n");
 }

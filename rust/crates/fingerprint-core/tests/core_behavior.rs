@@ -165,6 +165,46 @@ fn streaming_matches_duration_and_window_timestamps_for_target_rate() {
 }
 
 #[test]
+fn streaming_windows_match_one_shot_windows_for_any_chunking() {
+    // Both paths slice the same global chroma-frame grid, so streamed windows
+    // must equal one-shot windows for identical input, however it is chunked.
+    let samples = sine_wave(TARGET_SAMPLE_RATE, 4.0, 440.0);
+    let one_shot = fingerprint_windows(&samples, 1_500, 500).unwrap();
+    assert!(!one_shot.is_empty());
+
+    for chunk_size in [733usize, 4_096, 11_025] {
+        let mut streaming =
+            StreamingWindowedFingerprinter::new(TARGET_SAMPLE_RATE, 1, 1_500, 500).unwrap();
+        let mut streamed = Vec::new();
+        for chunk in samples.chunks(chunk_size) {
+            streamed.extend(streaming.push_samples_f32(chunk, 1));
+        }
+        streamed.extend(streaming.flush());
+        assert_eq!(streamed, one_shot, "chunk size {chunk_size} diverged");
+    }
+}
+
+#[test]
+fn find_top_matches_truncation_preserves_full_ordering() {
+    // The top-k selection must return exactly the leading prefix of the fully
+    // sorted ordering: score desc, then timestamp asc, then insertion order.
+    let mut matcher = CheckpointMatcher::with_drift(2);
+    for index in 0..64u32 {
+        let hashes: Vec<u32> = (0..16)
+            .map(|h| h ^ index.wrapping_mul(2_654_435_761))
+            .collect();
+        matcher.add((64 - index) as f32, hashes, 1.0);
+    }
+    let query: Vec<u32> = (0..16).collect();
+
+    let all = matcher.find_top_matches(&query, 64);
+    for max_results in [1u32, 5, 33, 63] {
+        let top = matcher.find_top_matches(&query, max_results);
+        assert_eq!(top.as_slice(), &all[..max_results as usize]);
+    }
+}
+
+#[test]
 fn too_short_samples_produce_no_hashes() {
     let samples = vec![0.0; FRAME_SIZE - 1];
     assert!(fingerprint_samples(&samples, 1).hashes.is_empty());

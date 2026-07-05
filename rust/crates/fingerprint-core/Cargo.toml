@@ -6,14 +6,16 @@ license.workspace = true
 
 [features]
 # Off by default so the shipped Fingerprint.xcframework carries no thread-pool
-# dependency. When enabled, one-shot windowed fingerprinting is parallelized
-# across CPU cores; the output is identical to the sequential path (each window
-# is independent), which the golden tests verify under `--all-features`.
+# dependency. When enabled, one-shot windowed fingerprinting computes its
+# chroma frames across CPU cores; the output is identical to the sequential
+# path (each frame is independent), which the golden tests verify under
+# `--all-features`.
 parallel = ["dep:rayon"]
 
 [dependencies]
 num-complex = "0.4"
 rayon = { version = "1", optional = true }
+realfft = "3"
 rustfft = "6"
 symphonia = { version = "0.5", default-features = false, features = ["mp3", "wav", "pcm"] }
 thiserror = "2"

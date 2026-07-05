@@ -1,4 +1,4 @@
-use std::io::{Cursor, ErrorKind};
+use std::io::{Cursor, ErrorKind, Read, Seek, SeekFrom};
 
 use symphonia::core::audio::SampleBuffer;
 use symphonia::core::codecs::DecoderOptions;
@@ -34,15 +34,75 @@ fn looks_like_mp3(bytes: &[u8]) -> bool {
             .is_some_and(|header| header[0] == 0xff && (header[1] & 0xe0) == 0xe0)
 }
 
+/// A `MediaSource` over caller-owned bytes with the borrow lifetime erased.
+///
+/// Symphonia's `MediaSourceStream` only accepts `'static` sources, which
+/// previously forced `decode_mp3_bytes` to copy the entire input (up to
+/// [`MAX_MP3_INPUT_BYTES`]) just to satisfy the bound. The raw-pointer view
+/// avoids that copy.
+///
+/// # Safety
+///
+/// Construction is `unsafe`: the caller promises the referenced bytes outlive
+/// every use of the source. `decode_mp3_bytes` upholds this by consuming the
+/// source fully inside the function that borrows `data` — the source is
+/// dropped with the format reader before the function returns, and no handle
+/// to it escapes.
+struct BorrowedByteSource {
+    cursor: Cursor<&'static [u8]>,
+}
+
+// SAFETY: the wrapped bytes are plain immutable data; the source is only ever
+// used from the thread that created it, and `MediaSource` merely requires the
+// marker bounds.
+unsafe impl Send for BorrowedByteSource {}
+unsafe impl Sync for BorrowedByteSource {}
+
+impl BorrowedByteSource {
+    /// # Safety
+    ///
+    /// `data` must remain live and unmodified for the whole lifetime of the
+    /// returned source.
+    unsafe fn new(data: &[u8]) -> Self {
+        let erased: &'static [u8] =
+            unsafe { std::slice::from_raw_parts(data.as_ptr(), data.len()) };
+        Self {
+            cursor: Cursor::new(erased),
+        }
+    }
+}
+
+impl Read for BorrowedByteSource {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        self.cursor.read(buf)
+    }
+}
+
+impl Seek for BorrowedByteSource {
+    fn seek(&mut self, pos: SeekFrom) -> std::io::Result<u64> {
+        self.cursor.seek(pos)
+    }
+}
+
+impl MediaSource for BorrowedByteSource {
+    fn is_seekable(&self) -> bool {
+        true
+    }
+
+    fn byte_len(&self) -> Option<u64> {
+        Some(self.cursor.get_ref().len() as u64)
+    }
+}
+
 fn decode_mp3_bytes(data: &[u8]) -> Result<DecodedAudio, FingerprintError> {
     if data.len() > MAX_MP3_INPUT_BYTES {
         return Err(FingerprintError::invalid("MP3 input is too large"));
     }
 
-    // Symphonia requires a `'static` media source. Keep the source lifetime
-    // honest by giving the cursor owned bytes instead of erasing `data`'s
-    // borrowed lifetime.
-    let source: Box<dyn MediaSource> = Box::new(Cursor::new(data.to_vec()));
+    // SAFETY: the source is consumed entirely within this function while
+    // `data` is borrowed, and nothing derived from it outlives the probe or
+    // decoder locals below (see `BorrowedByteSource`).
+    let source: Box<dyn MediaSource> = Box::new(unsafe { BorrowedByteSource::new(data) });
     let media_source = MediaSourceStream::new(source, Default::default());
     let mut hint = Hint::new();
     hint.with_extension("mp3");
