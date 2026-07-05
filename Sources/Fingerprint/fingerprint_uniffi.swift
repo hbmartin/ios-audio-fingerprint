@@ -625,6 +625,6 @@ private func takeError(status: UInt32, message: FingerprintFfiBytes) -> Fingerpr
     case 5:
         return .InternalError(message: text.isEmpty ? "internal Rust panic" : text)
     default:
-        return .InvalidInput(message: text)
+        return .InternalError(message: text.isEmpty ? "unrecognized status code \(status)" : text)
     }
 }

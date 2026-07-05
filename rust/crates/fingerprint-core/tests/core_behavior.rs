@@ -185,6 +185,33 @@ fn streaming_windows_match_one_shot_windows_for_any_chunking() {
 }
 
 #[test]
+fn resampled_streaming_matches_one_shot_after_flush() {
+    let source = sine_wave(44_100, 4.0, 440.0);
+    let target = resample_to_mono(&source, 44_100, 1);
+    let duration_ms = ((target.len() as u64 * 1_000) / TARGET_SAMPLE_RATE as u64) as u32;
+    let one_shot_hashes = fingerprint_samples(&target, duration_ms).hashes;
+
+    let mut streaming = StreamingFingerprinter::new(44_100, 1).unwrap();
+    let mut streamed_hashes = Vec::new();
+    for chunk in source.chunks(7_333) {
+        streamed_hashes.extend(streaming.push_samples_f32(chunk, 1));
+    }
+    streamed_hashes.extend(streaming.flush());
+    assert_eq!(streamed_hashes, one_shot_hashes);
+    assert_eq!(streaming.duration_ms(), duration_ms);
+
+    let one_shot_windows = fingerprint_windows(&target, 1_500, 500).unwrap();
+    let mut windowed = StreamingWindowedFingerprinter::new(44_100, 1, 1_500, 500).unwrap();
+    let mut streamed_windows = Vec::new();
+    for chunk in source.chunks(7_333) {
+        streamed_windows.extend(windowed.push_samples_f32(chunk, 1));
+    }
+    streamed_windows.extend(windowed.flush());
+    assert_eq!(streamed_windows, one_shot_windows);
+    assert_eq!(windowed.duration_ms(), duration_ms);
+}
+
+#[test]
 fn find_top_matches_truncation_preserves_full_ordering() {
     // The top-k selection must return exactly the leading prefix of the fully
     // sorted ordering: score desc, then timestamp asc, then insertion order.

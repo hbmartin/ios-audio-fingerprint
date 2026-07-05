@@ -3,6 +3,7 @@ use std::f64::consts::PI;
 use crate::error::FingerprintError;
 
 pub const TARGET_SAMPLE_RATE: u32 = 11_025;
+pub const MAX_SAMPLE_RATE: u32 = 384_000;
 
 /// Number of quantized filter phases per source-sample step. Output positions
 /// are snapped to this grid, which keeps coefficient lookup table-driven and
@@ -23,15 +24,25 @@ pub fn samples_for_milliseconds(milliseconds: u32) -> usize {
 }
 
 pub fn validate_audio_shape(sample_rate: u32, channels: u16) -> Result<(), FingerprintError> {
+    validate_sample_rate(sample_rate)?;
+    if channels == 0 {
+        return Err(FingerprintError::invalid(
+            "channel count must be greater than 0",
+        ));
+    }
+    Ok(())
+}
+
+fn validate_sample_rate(sample_rate: u32) -> Result<(), FingerprintError> {
     if sample_rate == 0 {
         return Err(FingerprintError::invalid(
             "sample rate must be greater than 0",
         ));
     }
-    if channels == 0 {
-        return Err(FingerprintError::invalid(
-            "channel count must be greater than 0",
-        ));
+    if sample_rate > MAX_SAMPLE_RATE {
+        return Err(FingerprintError::invalid(format!(
+            "sample rate must be at most {MAX_SAMPLE_RATE} Hz"
+        )));
     }
     Ok(())
 }
@@ -89,7 +100,7 @@ pub(crate) fn downmix_i16_to_mono(samples: &[i16], channels: u16) -> Vec<f32> {
 pub fn resample_to_mono(samples: &[f32], sample_rate: u32, channels: u16) -> Vec<f32> {
     let channel_count = (channels as usize).max(1);
     let frame_count = samples.len() / channel_count;
-    if frame_count == 0 || sample_rate == 0 {
+    if frame_count == 0 || validate_sample_rate(sample_rate).is_err() {
         return Vec::new();
     }
 
@@ -98,7 +109,9 @@ pub fn resample_to_mono(samples: &[f32], sample_rate: u32, channels: u16) -> Vec
         return mono;
     }
 
-    let kernel = ResampleKernel::new(sample_rate);
+    let Ok(kernel) = ResampleKernel::new(sample_rate) else {
+        return Vec::new();
+    };
     let output_count = kernel.output_len(frame_count);
     (0..output_count)
         .map(|index| kernel.sample_at(&mono, index, 0))
@@ -122,7 +135,8 @@ struct ResampleKernel {
 }
 
 impl ResampleKernel {
-    fn new(sample_rate: u32) -> Self {
+    fn new(sample_rate: u32) -> Result<Self, FingerprintError> {
+        validate_sample_rate(sample_rate)?;
         let ratio = sample_rate as f64 / TARGET_SAMPLE_RATE as f64;
         // Cutoff in cycles per *source* sample: at most the target Nyquist when
         // decimating, at most the source Nyquist when interpolating upward.
@@ -130,7 +144,10 @@ impl ResampleKernel {
         let half_width = (LOBES / (2.0 * cutoff)).ceil() as isize;
         let taps = (2 * half_width + 2) as usize;
 
-        let mut coefficients = vec![0.0f32; PHASES * taps];
+        let coefficient_count = PHASES.checked_mul(taps).ok_or_else(|| {
+            FingerprintError::invalid("sample rate requires too many resampler coefficients")
+        })?;
+        let mut coefficients = vec![0.0f32; coefficient_count];
         for phase in 0..PHASES {
             let fractional = phase as f64 / PHASES as f64;
             let row = &mut coefficients[phase * taps..(phase + 1) * taps];
@@ -149,12 +166,12 @@ impl ResampleKernel {
             }
         }
 
-        Self {
+        Ok(Self {
             ratio,
             half_width,
             taps,
             coefficients,
-        }
+        })
     }
 
     fn output_len(&self, frame_count: usize) -> usize {
@@ -250,10 +267,8 @@ fn windowed_sinc(t: f64, cutoff: f64, half_width: f64) -> f64 {
 /// Unlike the previous per-push linear resampler, filter state carries across
 /// pushes: chunk boundaries introduce no phase resets or edge artifacts, so a
 /// signal streamed in arbitrary chunk sizes resamples to the same values as
-/// the same signal resampled in one shot (except for the trailing
-/// `half_width` source samples, which are only emitted once enough context
-/// arrives). The small retained tail is never flushed with zero padding; a
-/// stream that has truly ended simply forgoes the final < 1 ms of output.
+/// the same signal resampled in one shot once [`StreamResampler::flush`] is
+/// called to release the final filter context.
 pub(crate) struct StreamResampler {
     kernel: ResampleKernel,
     /// Source samples not yet fully consumed; `history[0]` has absolute source
@@ -264,13 +279,13 @@ pub(crate) struct StreamResampler {
 }
 
 impl StreamResampler {
-    pub(crate) fn new(sample_rate: u32) -> Self {
-        Self {
-            kernel: ResampleKernel::new(sample_rate),
+    pub(crate) fn new(sample_rate: u32) -> Result<Self, FingerprintError> {
+        Ok(Self {
+            kernel: ResampleKernel::new(sample_rate)?,
             history: Vec::new(),
             history_start: 0,
             next_output: 0,
-        }
+        })
     }
 
     pub(crate) fn push(&mut self, mono: &[f32]) -> Vec<f32> {
@@ -293,6 +308,24 @@ impl StreamResampler {
             self.history_start += discard;
         }
 
+        output
+    }
+
+    pub(crate) fn flush(&mut self) -> Vec<f32> {
+        let total = self.history_start + self.history.len();
+        let output_count = self.kernel.output_len(total);
+
+        let mut output = Vec::new();
+        while self.next_output < output_count {
+            output.push(
+                self.kernel
+                    .sample_at(&self.history, self.next_output, self.history_start),
+            );
+            self.next_output += 1;
+        }
+
+        self.history.clear();
+        self.history_start = total;
         output
     }
 
@@ -338,6 +371,16 @@ mod tests {
     }
 
     #[test]
+    fn rejects_sample_rates_that_would_build_huge_kernels() {
+        assert!(matches!(
+            validate_audio_shape(MAX_SAMPLE_RATE + 1, 1),
+            Err(FingerprintError::InvalidInput { .. })
+        ));
+        assert!(resample_to_mono(&[0.0, 1.0], MAX_SAMPLE_RATE + 1, 1).is_empty());
+        assert!(StreamResampler::new(MAX_SAMPLE_RATE + 1).is_err());
+    }
+
+    #[test]
     fn preserves_in_band_tone_amplitude() {
         // A 440 Hz tone sits far below the 5,512 Hz target Nyquist and must
         // survive 44.1 kHz -> 11.025 kHz with its amplitude nearly intact.
@@ -367,26 +410,23 @@ mod tests {
         let one_shot = resample_to_mono(&source, 44_100, 1);
 
         for chunk_size in [64usize, 1_000, 4_096, 22_050] {
-            let mut resampler = StreamResampler::new(44_100);
+            let mut resampler = StreamResampler::new(44_100).unwrap();
             let mut streamed = Vec::new();
             for chunk in source.chunks(chunk_size) {
                 streamed.extend(resampler.push(chunk));
             }
             assert!(!streamed.is_empty());
-            assert!(streamed.len() <= one_shot.len());
-            for (index, (a, b)) in streamed.iter().zip(&one_shot).enumerate() {
-                assert!(
-                    a == b,
-                    "chunk {chunk_size}: sample {index} differs: {a} vs {b}"
-                );
-            }
+            assert!(streamed.len() < one_shot.len());
+            streamed.extend(resampler.flush());
+            assert_eq!(streamed, one_shot, "chunk size {chunk_size} diverged");
+            assert!(resampler.flush().is_empty());
         }
     }
 
     #[test]
     fn streaming_reset_restarts_the_stream() {
         let source = sine(44_100, 0.2, 440.0);
-        let mut resampler = StreamResampler::new(44_100);
+        let mut resampler = StreamResampler::new(44_100).unwrap();
         let first = resampler.push(&source);
         resampler.reset();
         let second = resampler.push(&source);

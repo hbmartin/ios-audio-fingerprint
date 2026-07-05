@@ -52,12 +52,6 @@ struct BorrowedByteSource {
     cursor: Cursor<&'static [u8]>,
 }
 
-// SAFETY: the wrapped bytes are plain immutable data; the source is only ever
-// used from the thread that created it, and `MediaSource` merely requires the
-// marker bounds.
-unsafe impl Send for BorrowedByteSource {}
-unsafe impl Sync for BorrowedByteSource {}
-
 impl BorrowedByteSource {
     /// # Safety
     ///
