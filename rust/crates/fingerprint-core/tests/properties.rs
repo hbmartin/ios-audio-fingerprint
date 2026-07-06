@@ -6,6 +6,7 @@
 //! entry points never panic on arbitrary input.
 
 use fingerprint_core::audio::resampler::{resample_to_mono, samples_for_milliseconds};
+use fingerprint_core::matching::compare_hashes_with_drift_detailed;
 use fingerprint_core::{
     compare_hashes, compare_hashes_with_drift, fingerprint_from_bytes, fingerprint_to_bytes,
     TARGET_SAMPLE_RATE,
@@ -75,6 +76,32 @@ proptest! {
             drifted + f32::EPSILON >= base,
             "drift {max_drift} lowered score: {drifted} < {base}",
         );
+    }
+
+    /// The detailed drift comparison reports bit-for-bit the score the public
+    /// scorer returns, stays within the requested drift, and its evidence
+    /// counters reproduce the score exactly.
+    #[test]
+    fn detailed_drift_matches_public_score(
+        first in vec(any::<u32>(), 0..128),
+        second in vec(any::<u32>(), 0..128),
+        max_drift in 0u32..32,
+    ) {
+        let detailed = compare_hashes_with_drift_detailed(&first, &second, max_drift);
+        prop_assert_eq!(detailed.score, compare_hashes_with_drift(&first, &second, max_drift));
+        prop_assert!(detailed.best_offset.unsigned_abs() <= max_drift);
+
+        if first.is_empty() || second.is_empty() {
+            prop_assert_eq!(detailed.score, 0.0);
+            prop_assert_eq!(detailed.compared_hashes, 0);
+            prop_assert_eq!(detailed.matching_bits, 0);
+        }
+        if detailed.compared_hashes > 0 {
+            let reconstructed = (detailed.matching_bits as f32
+                / (detailed.compared_hashes * 32) as f32)
+                .clamp(0.0, 1.0);
+            prop_assert_eq!(detailed.score, reconstructed);
+        }
     }
 
     /// Downmixing to mono at the target rate yields one sample per source frame,

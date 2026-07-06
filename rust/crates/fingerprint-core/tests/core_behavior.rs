@@ -4,10 +4,11 @@ use fingerprint_core::audio::resampler::{resample_to_mono, samples_for_milliseco
 use fingerprint_core::fingerprint::streaming::{
     StreamingFingerprinter, StreamingWindowedFingerprinter,
 };
+use fingerprint_core::matching::compare_hashes_with_drift_detailed;
 use fingerprint_core::{
     compare_hashes, compare_hashes_with_drift, fingerprint_from_bytes, fingerprint_samples,
     fingerprint_to_bytes, fingerprint_windows, CheckpointMatcher, FingerprintError, FRAME_SIZE,
-    TARGET_SAMPLE_RATE,
+    HASH_FRAME_COUNT, HOP_SIZE, TARGET_SAMPLE_RATE,
 };
 
 #[test]
@@ -205,6 +206,89 @@ fn find_top_matches_truncation_preserves_full_ordering() {
 }
 
 #[test]
+fn drift_detailed_recovers_offset_of_shifted_sequences() {
+    let base: Vec<u32> = (0..64u32).map(|i| i.wrapping_mul(2_654_435_761)).collect();
+
+    for shift in [1usize, 3, 7] {
+        let mut padded = vec![0xdead_beef; shift];
+        padded.extend_from_slice(&base);
+
+        // Dropping `shift` leading hashes of `padded` aligns it with `base`.
+        let detailed = compare_hashes_with_drift_detailed(&padded, &base, 8);
+        assert_eq!(detailed.best_offset, shift as i32, "shift {shift}");
+        assert_eq!(detailed.score, 1.0);
+        assert_eq!(detailed.compared_hashes, base.len());
+        assert_eq!(detailed.matching_bits, base.len() * 32);
+
+        let mirrored = compare_hashes_with_drift_detailed(&base, &padded, 8);
+        assert_eq!(mirrored.best_offset, -(shift as i32), "shift {shift}");
+        assert_eq!(mirrored.score, 1.0);
+    }
+
+    let empty = compare_hashes_with_drift_detailed(&[], &base, 8);
+    assert_eq!(empty.score, 0.0);
+    assert_eq!(empty.best_offset, 0);
+    assert_eq!(empty.compared_hashes, 0);
+    assert_eq!(empty.matching_bits, 0);
+}
+
+#[test]
+fn drift_detailed_tie_break_prefers_earliest_offset() {
+    // Constant sequences score 1.0 at every offset; the search order
+    // (0, +1, -1, +2, -2, ...) must keep the first winner.
+    let constant = vec![0x0f0f_0f0fu32; 8];
+    let detailed = compare_hashes_with_drift_detailed(&constant, &constant, 3);
+    assert_eq!(detailed.score, 1.0);
+    assert_eq!(detailed.best_offset, 0);
+}
+
+#[test]
+fn identical_sequences_score_one_and_unrelated_sequences_sit_near_noise_floor() {
+    // Pins the documented score semantics: identical audio scores 1.0, while
+    // unrelated hash streams agree on about half their bits (the >= 0.5 noise
+    // floor), and a drift search can only inflate a non-match score mildly.
+    let first = pseudo_random_hashes(0x1234_5678, 1_024);
+    let second = pseudo_random_hashes(0x9e37_79b9, 1_024);
+
+    assert_eq!(compare_hashes(&first, &first), 1.0);
+    assert_eq!(compare_hashes_with_drift(&first, &first, 16), 1.0);
+
+    let base = compare_hashes(&first, &second);
+    assert!((0.45..=0.55).contains(&base), "noise-floor score {base}");
+
+    let drifted = compare_hashes_with_drift(&first, &second, 16);
+    assert!(drifted >= base, "drift lowered a score: {drifted} < {base}");
+    assert!(drifted <= 0.60, "drifted noise score {drifted}");
+}
+
+#[test]
+fn streaming_warm_up_boundary_and_zero_channels_no_op() {
+    // The first hash needs FRAME_SIZE + (HASH_FRAME_COUNT - 1) * HOP_SIZE
+    // samples (~1.02 s); until then pushes legitimately return nothing while
+    // duration_ms() still advances. A channels: 0 push is the one invalid
+    // input that is silently ignored, and it is distinguishable because
+    // duration_ms() does NOT advance for it.
+    let warm_up = FRAME_SIZE + (HASH_FRAME_COUNT - 1) * HOP_SIZE;
+    let samples = sine_wave(TARGET_SAMPLE_RATE, 1.5, 440.0);
+    assert!(samples.len() > warm_up);
+
+    let mut streaming = StreamingFingerprinter::new(TARGET_SAMPLE_RATE, 1).unwrap();
+    assert!(streaming
+        .push_samples_f32(&samples[..warm_up - 1], 1)
+        .is_empty());
+    assert!(streaming.duration_ms() > 0);
+
+    let hashes = streaming.push_samples_f32(&samples[warm_up - 1..warm_up], 1);
+    assert_eq!(hashes.len(), 1);
+
+    let duration_before = streaming.duration_ms();
+    assert!(streaming.push_samples_f32(&samples[..1_024], 0).is_empty());
+    assert_eq!(streaming.duration_ms(), duration_before);
+    streaming.push_samples_f32(&samples[..1_024], 1);
+    assert!(streaming.duration_ms() > duration_before);
+}
+
+#[test]
 fn too_short_samples_produce_no_hashes() {
     let samples = vec![0.0; FRAME_SIZE - 1];
     assert!(fingerprint_samples(&samples, 1).hashes.is_empty());
@@ -269,6 +353,20 @@ fn append_u16(bytes: &mut Vec<u8>, value: u16) {
 
 fn append_u32(bytes: &mut Vec<u8>, value: u32) {
     bytes.extend_from_slice(&value.to_le_bytes());
+}
+
+/// Deterministic xorshift32 hash stream; unrelated seeds give unrelated
+/// bit streams whose pairwise agreement sits at the ~0.5 noise floor.
+fn pseudo_random_hashes(seed: u32, count: usize) -> Vec<u32> {
+    let mut state = seed;
+    (0..count)
+        .map(|_| {
+            state ^= state << 13;
+            state ^= state >> 17;
+            state ^= state << 5;
+            state
+        })
+        .collect()
 }
 
 fn sine_wave(sample_rate: u32, seconds: f32, frequency: f32) -> Vec<f32> {

@@ -47,6 +47,7 @@ let windows = try Fingerprinter().fingerprintDataWindowed(
 
 ### Comparing and matching
 
+- <doc:InterpretingMatchScores>
 - ``compareHashes(hashes1:hashes2:)``
 - ``compareHashesWithDrift(hashes1:hashes2:maxDrift:)``
 - ``CheckpointMatcher``

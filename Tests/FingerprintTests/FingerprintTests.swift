@@ -59,6 +59,49 @@ struct FingerprintTests {
         #expect(fingerprinter.durationMs() == 2_000)
     }
 
+    /// Pins the documented score semantics: identical sequences score exactly 1, while
+    /// unrelated hash streams agree on about half their bits — the ~0.5 noise floor — and a
+    /// drift search can only inflate a non-match score mildly.
+    @Test
+    func unrelatedHashesScoreNearNoiseFloor() {
+        let first = Self.pseudoRandomHashes(seed: 0x1234_5678, count: 1_024)
+        let second = Self.pseudoRandomHashes(seed: 0x9e37_79b9, count: 1_024)
+
+        #expect(compareHashes(hashes1: first, hashes2: first) == 1)
+        #expect(compareHashesWithDrift(hashes1: first, hashes2: first, maxDrift: 16) == 1)
+
+        let base = compareHashes(hashes1: first, hashes2: second)
+        #expect(base >= 0.45 && base <= 0.55)
+
+        let drifted = compareHashesWithDrift(hashes1: first, hashes2: second, maxDrift: 16)
+        #expect(drifted >= base)
+        #expect(drifted <= 0.60)
+    }
+
+    /// Pins the documented empty-return semantics: pushes return nothing until the first hash
+    /// has ~1.02 s of audio (11,264 samples at the analysis rate) while `durationMs()` still
+    /// advances, and a `channels: 0` push is the one ignored input for which it does not.
+    @Test
+    func streamingWarmUpAndZeroChannelsDiagnostic() throws {
+        let warmUpSamples = 11_264  // FRAME_SIZE + 7 × HOP_SIZE at the 11,025 Hz analysis rate
+        let fingerprinter = try StreamingFingerprinter(sampleRate: 11_025, channels: 1)
+        let samples = sineWave(sampleRate: 11_025, seconds: 1.5, frequency: 440)
+
+        #expect(fingerprinter.pushSamplesF32(samples: Array(samples[..<(warmUpSamples - 1)]), channels: 1).isEmpty)
+        #expect(fingerprinter.durationMs() > 0)
+
+        let firstHashes = fingerprinter.pushSamplesF32(
+            samples: Array(samples[(warmUpSamples - 1)..<warmUpSamples]), channels: 1
+        )
+        #expect(firstHashes.count == 1)
+
+        let durationBefore = fingerprinter.durationMs()
+        #expect(fingerprinter.pushSamplesF32(samples: Array(samples[..<1_024]), channels: 0).isEmpty)
+        #expect(fingerprinter.durationMs() == durationBefore)
+        _ = fingerprinter.pushSamplesF32(samples: Array(samples[..<1_024]), channels: 1)
+        #expect(fingerprinter.durationMs() > durationBefore)
+    }
+
     /// The streaming classes advertise cross-domain sharing (the Rust side owns a `Mutex`), so
     /// exercise a shared instance from concurrent tasks. Runs under ThreadSanitizer in CI.
     @Test
@@ -143,6 +186,18 @@ struct FingerprintTests {
         #expect(windows[0].timestampMs == 0)
         #expect(windows[1].timestampMs == 500)
         #expect(!windows[0].hashes.isEmpty)
+    }
+
+    /// Deterministic xorshift32 hash stream; unrelated seeds give unrelated bit streams whose
+    /// pairwise agreement sits at the ~0.5 noise floor.
+    private static func pseudoRandomHashes(seed: UInt32, count: Int) -> [UInt32] {
+        var state = seed
+        return (0..<count).map { _ in
+            state ^= state << 13
+            state ^= state >> 17
+            state ^= state << 5
+            return state
+        }
     }
 
     private func sineWave(sampleRate: Int, seconds: Double, frequency: Double) -> [Float] {
