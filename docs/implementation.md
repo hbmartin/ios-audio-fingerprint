@@ -332,6 +332,12 @@ therefore emits stride-aligned hashes as data arrives; the one-shot encoder can
 add an extra terminal hash when the last possible hash start is not
 stride-aligned.
 
+The first hash requires `FRAME_SIZE + (HASH_FRAME_COUNT - 1) * HOP_SIZE =
+11,264` samples (~1.02 s at 11,025 Hz), so early pushes legitimately return
+nothing. A push with `channels == 0` is rejected before ingest, so it is the
+one empty return for which `duration_ms()` does not advance — callers can use
+that to distinguish invalid input from warm-up.
+
 `reset()` clears buffered samples, queued chroma frames, and duration state.
 
 ## Streaming Windowed Fingerprinting
@@ -393,6 +399,21 @@ matching_bits / (compared_hash_count * 32)
 
 Empty inputs score `0.0`.
 
+### Score distribution and the noise floor
+
+Scores of *unrelated* inputs do not cluster near zero. If each hash bit is set
+with probability `p`, two independent bits agree with probability
+`p^2 + (1 - p)^2`, which is minimized at `0.5` when `p = 0.5` and rises as the
+bits become biased — and the threshold-derived chroma bits are biased. The
+noise floor is therefore **at least 0.5**: a score near `0.5` is chance level,
+not a half-confident match. Unrelated real-world audio typically lands in
+~0.5–0.6, while matching content scores well above ~0.65. An `n`-hash
+comparison has standard deviation roughly `0.5 / sqrt(32 n)` at the floor, so
+short overlaps are noisy. Consumer-facing threshold guidance lives in the DocC
+article `Sources/Fingerprint/Fingerprint.docc/InterpretingMatchScores.md`.
+
+### Drift search
+
 `compare_hashes_with_drift` searches for the best score over:
 
 - No offset.
@@ -401,6 +422,26 @@ Empty inputs score `0.0`.
 
 The drift search is capped by `max_drift` and both input lengths. The final
 score is clamped to `[0.0, 1.0]`.
+
+One drift position spans `HASH_STRIDE_FRAMES * HOP_SIZE = 2,048` samples at
+11,025 Hz ≈ **185.8 ms** of audio. Because the result is a max over
+`2 * max_drift + 1` comparisons, larger `max_drift` mildly inflates the scores
+of non-matching inputs.
+
+Internally the search is implemented by `compare_hashes_with_drift_detailed`
+(in `matching.rs`, not re-exported from the crate root), which also reports the
+best signed offset and the raw evidence counts:
+
+- Offsets are tried in the order `0, +1, -1, +2, -2, …`; the first offset
+  attaining the maximum score wins ties.
+- `best_offset` is positive when the best alignment dropped leading hashes of
+  the *first* input (the first input leads), negative for the second.
+- `compared_hashes` and `matching_bits` are the overlap length and agreeing-bit
+  count at that offset.
+
+The public `compare_hashes_with_drift` and the FFI/Swift surface consume only
+`score`; the extra fields exist so a future API can expose per-match alignment
+without re-deriving it.
 
 `CheckpointMatcher` stores checkpoints with timestamp, hash array, and duration.
 Current scoring uses hashes only; duration is retained with the checkpoint but

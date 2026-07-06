@@ -147,6 +147,12 @@ When you already have decoded PCM (e.g. from an audio unit or a network stream),
 push samples as they arrive. Streaming paths **do not** decode containers — you
 supply interleaved samples and the source sample rate / channel count up front.
 
+Empty results from a push are normal, not an error: the first hash needs about
+1.02 s of audio, and a windowed stream emits nothing until a full window has
+arrived. The one silently ignored *invalid* input, `channels: 0`, is detectable
+because `durationMs()` does not advance for it (it always advances when samples
+are actually ingested).
+
 Emit **hashes** incrementally:
 
 ```swift
@@ -178,11 +184,19 @@ let last  = windowed.flush()                                  // only complete w
 ### Comparing fingerprints
 
 Scores are in `[0.0, 1.0]`, measuring bit agreement across the compared hashes.
+Unrelated audio scores near **0.5** (the chance-agreement noise floor), not 0;
+true matches typically score well above ~0.65. One drift position corresponds
+to about **186 ms** of audio, and because the drifted score is a max over
+`2 × maxDrift + 1` comparisons, larger `maxDrift` mildly inflates non-match
+scores. See the *Interpreting Match Scores* DocC article
+([`Sources/Fingerprint/Fingerprint.docc/InterpretingMatchScores.md`](Sources/Fingerprint/Fingerprint.docc/InterpretingMatchScores.md))
+for the full guidance, and [`docs/implementation.md`](docs/implementation.md)
+for the math.
 
 ```swift
 let score = compareHashes(hashes1: a, hashes2: b)
 
-// Tolerate up to `maxDrift` hash-positions of misalignment between the two.
+// Tolerate up to `maxDrift` hash-positions (~186 ms each) of misalignment.
 let drifted = compareHashesWithDrift(hashes1: a, hashes2: b, maxDrift: 8)
 ```
 
@@ -190,6 +204,10 @@ let drifted = compareHashesWithDrift(hashes1: a, hashes2: b, maxDrift: 8)
 
 `CheckpointMatcher` stores timestamped fingerprints and returns the best matches
 for a query, sorted by score (desc), then timestamp (asc), then insertion order.
+Every stored checkpoint is scored on each query (`maxResults` only truncates the
+returned list). To absorb queries that start off the stored checkpoint grid, set
+`maxDrift ≈ ceil(worstCaseOffsetSeconds / 0.186)` — e.g. `6` for checkpoints on
+a 2 s grid queried from arbitrary positions.
 
 ```swift
 let matcher = CheckpointMatcher()

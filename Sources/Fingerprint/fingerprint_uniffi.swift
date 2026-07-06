@@ -13,10 +13,11 @@ public protocol CheckpointMatcherProtocol: AnyObject {
     /// Number of stored checkpoints.
     func count() -> UInt32
     /// The best-scoring checkpoints for `queryHashes`, at most `maxResults` of them, sorted by
-    /// score (descending), then timestamp (ascending), then insertion order.
+    /// score (descending), then timestamp (ascending), then insertion order. Every stored
+    /// checkpoint is scored on each call; `maxResults` only truncates the returned list.
     func findTopMatches(queryHashes: [UInt32], maxResults: UInt32) -> [MatchResult]
-    /// Sets the maximum hash-position misalignment tolerated when scoring (see
-    /// ``compareHashesWithDrift(hashes1:hashes2:maxDrift:)``).
+    /// Sets the maximum hash-position misalignment tolerated when scoring; one position is
+    /// about 186 ms of audio (see ``compareHashesWithDrift(hashes1:hashes2:maxDrift:)``).
     func setDrift(maxDrift: UInt32)
 }
 
@@ -29,7 +30,12 @@ public protocol CheckpointMatcherProtocol: AnyObject {
 ///
 /// Thread safety: `raw` is immutable after initialization and the Rust side
 /// guards all mutable state behind a `Mutex` (see fingerprint-ffi/src/lib.rs),
-/// so instances may be shared across concurrency domains.
+/// so instances may be shared across concurrency domains. Concurrent calls are
+/// safe but **serialized** — the mutex admits one call at a time, including
+/// ``findTopMatches(queryHashes:maxResults:)`` reads. The matcher is mutable:
+/// ``add(timestamp:hashes:duration:)``, ``clear()``, and ``setDrift(maxDrift:)``
+/// change the results of subsequent queries, so callers that need a stable
+/// snapshot must order those calls themselves.
 public final class CheckpointMatcher: CheckpointMatcherProtocol, @unchecked Sendable {
     /// Marker for the designated initializer that allocates its own Rust handle.
     public struct NoPointer: Sendable {
@@ -101,6 +107,11 @@ public final class CheckpointMatcher: CheckpointMatcherProtocol, @unchecked Send
 
     /// Scores every stored checkpoint against `queryHashes` and returns at most `maxResults`
     /// of the best, sorted by score (descending), then timestamp (ascending), then insertion order.
+    ///
+    /// Each call re-scores all checkpoints with the drift search at the current
+    /// ``setDrift(maxDrift:)`` value (cost grows with checkpoints × query length × drift);
+    /// `maxResults` only truncates the returned list, it does not reduce the scoring work.
+    /// See <doc:InterpretingMatchScores> for how to read the returned scores.
     public func findTopMatches(queryHashes: [UInt32], maxResults: UInt32) -> [MatchResult] {
         let ffiMatches = queryHashes.withUnsafeBufferPointer { buffer in
             fingerprint_ffi_checkpoint_find_top_matches(raw, buffer.baseAddress, buffer.count, maxResults)
@@ -108,7 +119,9 @@ public final class CheckpointMatcher: CheckpointMatcherProtocol, @unchecked Send
         return takeMatchArray(ffiMatches)
     }
 
-    /// Sets the maximum hash-position misalignment tolerated when scoring queries.
+    /// Sets the maximum hash-position misalignment tolerated when scoring queries; one
+    /// position is about 186 ms of audio. See <doc:InterpretingMatchScores> for how drift
+    /// interacts with the checkpoint grid and with score thresholds.
     public func setDrift(maxDrift: UInt32) {
         fingerprint_ffi_checkpoint_set_drift(raw, maxDrift)
     }
@@ -186,10 +199,13 @@ public protocol StreamingFingerprinterProtocol: AnyObject {
     /// Hashes from any remaining complete frames. Does not finalize the stream.
     func flush() -> [UInt32]
     /// Pushes interleaved 16-bit PCM (using the channel count from `init`) and returns any
-    /// newly completed hashes.
+    /// newly completed hashes. An empty result is normal while the stream warms up (the
+    /// first hash needs about 1.02 s of audio).
     func pushSamples(samples: [Int16]) -> [UInt32]
     /// Pushes interleaved float PCM with an explicit per-call channel count and returns any
-    /// newly completed hashes.
+    /// newly completed hashes. An empty result is normal while the stream warms up; only
+    /// `channels: 0` is an invalid-input no-op, detectable because `durationMs()` does not
+    /// advance for it.
     func pushSamplesF32(samples: [Float], channels: UInt16) -> [UInt32]
     /// Clears all buffered state so the next push starts a fresh stream.
     func reset()
@@ -204,7 +220,9 @@ public protocol StreamingFingerprinterProtocol: AnyObject {
 ///
 /// Thread safety: `raw` is immutable after initialization and the Rust side
 /// guards all mutable state behind a `Mutex` (see fingerprint-ffi/src/lib.rs),
-/// so instances may be shared across concurrency domains.
+/// so instances may be shared across concurrency domains. Concurrent calls are
+/// safe but serialized (one at a time); interleaving pushes from multiple tasks
+/// interleaves their audio, so feed a stream from a single task.
 public final class StreamingFingerprinter: StreamingFingerprinterProtocol, @unchecked Sendable {
     /// Marker for the designated initializer that allocates its own Rust handle.
     public struct NoPointer: Sendable {
@@ -261,6 +279,12 @@ public final class StreamingFingerprinter: StreamingFingerprinterProtocol, @unch
 
     /// Pushes interleaved 16-bit PCM (using the channel count from `init`) and returns any
     /// newly completed hashes.
+    ///
+    /// An empty result is normal, not an error: the first hash needs roughly 1.02 s of audio
+    /// at the analysis rate (`FRAME_SIZE + 7 × HOP_SIZE` = 11,264 samples), and thereafter a
+    /// push shorter than one hop may also complete no new hash. ``durationMs()`` advances
+    /// whenever samples were actually ingested, so it distinguishes "warming up" from
+    /// "input was ignored".
     public func pushSamples(samples: [Int16]) -> [UInt32] {
         let array = samples.withUnsafeBufferPointer { buffer in
             fingerprint_ffi_streaming_push_i16(raw, buffer.baseAddress, buffer.count)
@@ -270,6 +294,12 @@ public final class StreamingFingerprinter: StreamingFingerprinterProtocol, @unch
 
     /// Pushes interleaved float PCM with an explicit per-call channel count and returns any
     /// newly completed hashes. Passing `channels: 0` is a no-op that returns `[]`.
+    ///
+    /// An empty result is normal during warm-up (the first hash needs about 1.02 s of audio)
+    /// and after short pushes. The one *invalid-input* case, `channels: 0`, is silently
+    /// ignored but detectable: ``durationMs()`` does not advance for it, while it always
+    /// advances when samples are actually ingested. A wrong nonzero channel count cannot be
+    /// detected and silently garbles the downmix — keep it consistent with the interleaving.
     public func pushSamplesF32(samples: [Float], channels: UInt16) -> [UInt32] {
         let array = samples.withUnsafeBufferPointer { buffer in
             fingerprint_ffi_streaming_push_f32(raw, buffer.baseAddress, buffer.count, channels)
@@ -295,10 +325,13 @@ public protocol StreamingWindowedFingerprinterProtocol: AnyObject {
     /// Any windows that completed but have not been emitted. Does not finalize the stream.
     func flush() -> [WindowedFingerprint]
     /// Pushes interleaved 16-bit PCM (using the channel count from `init`) and returns any
-    /// newly completed windows.
+    /// newly completed windows. An empty result is normal until a full window duration of
+    /// audio has been pushed.
     func pushSamples(samples: [Int16]) -> [WindowedFingerprint]
     /// Pushes interleaved float PCM with an explicit per-call channel count and returns any
-    /// newly completed windows.
+    /// newly completed windows. An empty result is normal until a full window duration has
+    /// arrived; only `channels: 0` is an invalid-input no-op, detectable because
+    /// `durationMs()` does not advance for it.
     func pushSamplesF32(samples: [Float], channels: UInt16) -> [WindowedFingerprint]
     /// Clears all buffered state so the next push starts a fresh stream.
     func reset()
@@ -313,7 +346,9 @@ public protocol StreamingWindowedFingerprinterProtocol: AnyObject {
 ///
 /// Thread safety: `raw` is immutable after initialization and the Rust side
 /// guards all mutable state behind a `Mutex` (see fingerprint-ffi/src/lib.rs),
-/// so instances may be shared across concurrency domains.
+/// so instances may be shared across concurrency domains. Concurrent calls are
+/// safe but serialized (one at a time); interleaving pushes from multiple tasks
+/// interleaves their audio, so feed a stream from a single task.
 public final class StreamingWindowedFingerprinter: StreamingWindowedFingerprinterProtocol, @unchecked Sendable {
     /// Marker for the designated initializer that allocates its own Rust handle.
     public struct NoPointer: Sendable {
@@ -389,6 +424,11 @@ public final class StreamingWindowedFingerprinter: StreamingWindowedFingerprinte
 
     /// Pushes interleaved 16-bit PCM (using the channel count from `init`) and returns any
     /// newly completed windows.
+    ///
+    /// An empty result is normal, not an error: a window is only emitted once its full
+    /// duration of audio has arrived, so nothing is returned until the first
+    /// `windowDurationMs` of samples has been pushed. ``durationMs()`` advances whenever
+    /// samples were actually ingested.
     public func pushSamples(samples: [Int16]) -> [WindowedFingerprint] {
         let windows = samples.withUnsafeBufferPointer { buffer in
             fingerprint_ffi_streaming_windowed_push_i16(raw, buffer.baseAddress, buffer.count)
@@ -398,6 +438,12 @@ public final class StreamingWindowedFingerprinter: StreamingWindowedFingerprinte
 
     /// Pushes interleaved float PCM with an explicit per-call channel count and returns any
     /// newly completed windows. Passing `channels: 0` is a no-op that returns `[]`.
+    ///
+    /// An empty result is normal until a full window duration of audio has arrived. The one
+    /// *invalid-input* case, `channels: 0`, is silently ignored but detectable:
+    /// ``durationMs()`` does not advance for it, while it always advances when samples are
+    /// actually ingested. A wrong nonzero channel count cannot be detected and silently
+    /// garbles the downmix — keep it consistent with the interleaving.
     public func pushSamplesF32(samples: [Float], channels: UInt16) -> [WindowedFingerprint] {
         let windows = samples.withUnsafeBufferPointer { buffer in
             fingerprint_ffi_streaming_windowed_push_f32(raw, buffer.baseAddress, buffer.count, channels)
@@ -435,7 +481,9 @@ public struct FingerprintData: Equatable, Hashable, Sendable {
 public struct MatchResult: Equatable, Hashable, Sendable {
     /// The stored checkpoint's timestamp in seconds.
     public var timestamp: Float
-    /// Similarity of the checkpoint to the query in `[0.0, 1.0]`.
+    /// Fraction of agreeing bits between the query and the checkpoint, in `[0.0, 1.0]`.
+    /// Unrelated checkpoints score near `0.5` (the chance-agreement noise floor), not `0`;
+    /// see <doc:InterpretingMatchScores> for threshold guidance.
     public var score: Float
 
     public init(timestamp: Float, score: Float) {
@@ -496,6 +544,11 @@ extension FingerprintError: LocalizedError {
 /// The score is the fraction of agreeing bits across the overlapping prefix of
 /// the two sequences (the comparison stops at the shorter one). Either
 /// sequence being empty scores `0.0`.
+///
+/// Unrelated audio scores near **0.5**, not 0 — two unrelated bit streams agree
+/// on about half their bits by chance, so `0.5` is the noise floor rather than
+/// a half-confident match. See <doc:InterpretingMatchScores> for the score
+/// distribution and threshold guidance.
 public func compareHashes(hashes1: [UInt32], hashes2: [UInt32]) -> Float {
     hashes1.withUnsafeBufferPointer { first in
         hashes2.withUnsafeBufferPointer { second in
@@ -507,6 +560,14 @@ public func compareHashes(hashes1: [UInt32], hashes2: [UInt32]) -> Float {
 /// The best ``compareHashes(hashes1:hashes2:)`` score across relative shifts of
 /// up to `maxDrift` hash positions in either direction, tolerating timing
 /// misalignment between the two sequences.
+///
+/// One hash position spans about **186 ms** of audio, so `maxDrift` tolerates
+/// up to `maxDrift × 0.186` seconds of misalignment. The result is the maximum
+/// over `2 × maxDrift + 1` comparisons, which mildly inflates the scores of
+/// *non*-matching sequences — retune thresholds when changing `maxDrift`. The
+/// search is a single global shift per comparison: it does not track timing
+/// trends across successive calls or align finer than one hash position. See
+/// <doc:InterpretingMatchScores>.
 public func compareHashesWithDrift(hashes1: [UInt32], hashes2: [UInt32], maxDrift: UInt32) -> Float {
     hashes1.withUnsafeBufferPointer { first in
         hashes2.withUnsafeBufferPointer { second in
