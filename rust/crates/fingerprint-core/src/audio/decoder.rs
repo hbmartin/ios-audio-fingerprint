@@ -55,17 +55,26 @@ fn mp3_probe() -> &'static Probe {
 
 /// Skip any ID3v2 tags prepended to `data` without parsing their contents.
 ///
-/// Tag layout: `"ID3"`, version (2 bytes), flags (1 byte), 28-bit syncsafe
-/// length of the tag body (4 bytes), then the body, plus a 10-byte footer if
-/// flag `0x10` is set. A tag that claims to extend past the end of `data`
-/// yields an empty slice, which the caller reports as unsupported.
+/// Tag layout: `"ID3"`, major version, minor version, flags (1 byte), 28-bit
+/// syncsafe length of the tag body (4 bytes), then the body, plus a 10-byte
+/// footer if the major version is 4 and flag `0x10` is set. A tag that claims
+/// to extend past the end of `data` yields an empty slice, which the caller
+/// reports as unsupported.
 fn skip_id3v2_tags(mut data: &[u8]) -> &[u8] {
     while data.len() >= 10 && data.starts_with(b"ID3") {
+        let major_version = data[3];
         let flags = data[5];
         let body_len = data[6..10]
             .iter()
             .fold(0usize, |len, &byte| (len << 7) | usize::from(byte & 0x7f));
-        let footer_len = if flags & 0x10 != 0 { 10 } else { 0 };
+        // A footer exists only in ID3v2.4; in v2.2/v2.3 the 0x10 flag bit is
+        // undefined and must not be treated as a footer indicator, or the skip
+        // would eat 10 bytes of the following audio.
+        let footer_len = if major_version >= 4 && flags & 0x10 != 0 {
+            10
+        } else {
+            0
+        };
         let total = 10usize.saturating_add(body_len).saturating_add(footer_len);
         if total >= data.len() {
             return &[];
@@ -136,17 +145,27 @@ fn decode_mp3_bytes(data: &[u8]) -> Result<DecodedAudio, FingerprintError> {
 
     let data = skip_id3v2_tags(data);
 
+    // A leading ID3v2 tag can wrap a non-MPEG container: some encoders prepend
+    // tags to WAV files, and `looks_like_mp3` routes any `ID3`-prefixed input
+    // here. With the tag stripped, re-sniff for WAV before probing as MPEG
+    // audio so tagged WAV decodes instead of being rejected as unsupported.
+    if looks_like_wave(data) {
+        return decode_wave_bytes(data);
+    }
+
     // SAFETY: the source is consumed entirely within this function while
     // `data` is borrowed, and nothing derived from it outlives the probe or
     // decoder locals below (see `BorrowedByteSource`).
     let source: Box<dyn MediaSource> = Box::new(unsafe { BorrowedByteSource::new(data) });
     let media_source = MediaSourceStream::new(source, Default::default());
-    let mut hint = Hint::new();
-    hint.with_extension("mp3");
 
+    // The custom probe registers only `MpaReader`, and symphonia 0.5's
+    // `Probe::format` ignores the hint entirely (marker-scan only), so an
+    // empty hint is equivalent and avoids implying the extension gates format
+    // selection.
     let probed = mp3_probe()
         .format(
-            &hint,
+            &Hint::new(),
             media_source,
             &FormatOptions::default(),
             &MetadataOptions::default(),

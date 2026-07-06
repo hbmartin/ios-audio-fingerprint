@@ -126,6 +126,78 @@ fn decoder_skips_id3v2_tags_on_real_mp3() {
     }
 }
 
+/// A footer exists only in ID3v2.4. A v2.2/v2.3 tag with the 0x10 flag bit set
+/// (undefined in those versions) must not trigger a 10-byte footer skip, or the
+/// skip eats into the first MPEG frame and the decoded samples silently diverge
+/// from the untagged file.
+#[test]
+fn decoder_ignores_footer_flag_before_id3v2_4() {
+    let mp3: &[u8] = include_bytes!("fixtures/reference.mp3");
+    let plain = decode_audio_bytes(mp3).expect("reference.mp3 must decode");
+
+    // ID3v2.3 header (major version 3) with the 0x10 flag bit set and a
+    // 16-byte zero body. There is no footer, so exactly header + body is
+    // skipped and decoding must start at the first frame.
+    let mut v23_stray_footer_flag = b"ID3\x03\x00\x10\x00\x00\x00\x10".to_vec();
+    v23_stray_footer_flag.extend_from_slice(&[0u8; 16]);
+    v23_stray_footer_flag.extend_from_slice(mp3);
+
+    let decoded = decode_audio_bytes(&v23_stray_footer_flag).expect("tagged MP3 must decode");
+    assert_eq!(decoded.samples, plain.samples);
+    assert_eq!(decoded.sample_rate, plain.sample_rate);
+    assert_eq!(decoded.channels, plain.channels);
+}
+
+/// Some encoders prepend an ID3v2 tag to a WAV file. The tag is stripped
+/// without parsing and the underlying RIFF/WAVE container must still decode,
+/// identically to the untagged WAV.
+#[test]
+fn decoder_decodes_id3v2_tagged_wave() {
+    let wave = reference_wave(8_000, 1, 0.05);
+    let plain = decode_audio_bytes(&wave).expect("reference WAV must decode");
+
+    // ID3v2.3 tag with a 16-byte zero body, then the RIFF/WAVE payload.
+    let mut tagged = b"ID3\x03\x00\x00\x00\x00\x00\x10".to_vec();
+    tagged.extend_from_slice(&[0u8; 16]);
+    tagged.extend_from_slice(&wave);
+
+    let decoded = decode_audio_bytes(&tagged).expect("ID3-tagged WAV must decode");
+    assert_eq!(decoded.samples, plain.samples);
+    assert_eq!(decoded.sample_rate, plain.sample_rate);
+    assert_eq!(decoded.channels, plain.channels);
+}
+
+/// Interleave a mono ramp into 16-bit PCM and wrap it in a canonical RIFF/WAVE
+/// container. Kept local to this test file so the decode-safety suite stays
+/// self-contained.
+fn reference_wave(sample_rate: u32, channels: u16, seconds: f32) -> Vec<u8> {
+    let count = (sample_rate as f32 * seconds) as usize;
+    let mut payload = Vec::with_capacity(count * channels as usize * 2);
+    for index in 0..count {
+        let scaled = ((index % 256) as i16 - 128) * 128;
+        for _ in 0..channels {
+            payload.extend_from_slice(&scaled.to_le_bytes());
+        }
+    }
+
+    let mut bytes = Vec::new();
+    bytes.extend_from_slice(b"RIFF");
+    bytes.extend_from_slice(&(36 + payload.len() as u32).to_le_bytes());
+    bytes.extend_from_slice(b"WAVE");
+    bytes.extend_from_slice(b"fmt ");
+    bytes.extend_from_slice(&16u32.to_le_bytes());
+    bytes.extend_from_slice(&1u16.to_le_bytes()); // PCM
+    bytes.extend_from_slice(&channels.to_le_bytes());
+    bytes.extend_from_slice(&sample_rate.to_le_bytes());
+    bytes.extend_from_slice(&(sample_rate * channels as u32 * 2).to_le_bytes());
+    bytes.extend_from_slice(&(channels * 2).to_le_bytes());
+    bytes.extend_from_slice(&16u16.to_le_bytes());
+    bytes.extend_from_slice(b"data");
+    bytes.extend_from_slice(&(payload.len() as u32).to_le_bytes());
+    bytes.extend_from_slice(&payload);
+    bytes
+}
+
 #[test]
 fn decoder_never_panics_on_malformed_input() {
     let mut rng = XorShift(0x9e37_79b9_7f4a_7c15);
