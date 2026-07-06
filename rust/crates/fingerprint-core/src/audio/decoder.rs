@@ -1,4 +1,5 @@
 use std::io::{Cursor, ErrorKind, Read, Seek, SeekFrom};
+use std::sync::OnceLock;
 
 use symphonia::core::audio::SampleBuffer;
 use symphonia::core::codecs::DecoderOptions;
@@ -6,7 +7,8 @@ use symphonia::core::errors::Error as SymphoniaError;
 use symphonia::core::formats::FormatOptions;
 use symphonia::core::io::{MediaSource, MediaSourceStream};
 use symphonia::core::meta::MetadataOptions;
-use symphonia::core::probe::Hint;
+use symphonia::core::probe::{Hint, Probe};
+use symphonia::default::formats::MpaReader;
 
 use crate::audio::wav::{decode_wave_bytes, looks_like_wave};
 use crate::audio::DecodedAudio;
@@ -32,6 +34,45 @@ fn looks_like_mp3(bytes: &[u8]) -> bool {
         || bytes
             .get(0..2)
             .is_some_and(|header| header[0] == 0xff && (header[1] & 0xe0) == 0xe0)
+}
+
+/// A probe that only knows the MPEG-audio format.
+///
+/// `symphonia::default::get_probe()` additionally registers the ID3v2
+/// metadata reader, which panics on malformed ID3v2.4 extended headers
+/// (`unreachable!` in symphonia-metadata 0.5.5, `id3v2/mod.rs:238`; found by
+/// the `decode_audio` fuzz target). Fingerprinting never consumes tag
+/// metadata, so leading tags are skipped without parsing by
+/// [`skip_id3v2_tags`] and the metadata reader stays unregistered.
+fn mp3_probe() -> &'static Probe {
+    static PROBE: OnceLock<Probe> = OnceLock::new();
+    PROBE.get_or_init(|| {
+        let mut probe = Probe::default();
+        probe.register_all::<MpaReader>();
+        probe
+    })
+}
+
+/// Skip any ID3v2 tags prepended to `data` without parsing their contents.
+///
+/// Tag layout: `"ID3"`, version (2 bytes), flags (1 byte), 28-bit syncsafe
+/// length of the tag body (4 bytes), then the body, plus a 10-byte footer if
+/// flag `0x10` is set. A tag that claims to extend past the end of `data`
+/// yields an empty slice, which the caller reports as unsupported.
+fn skip_id3v2_tags(mut data: &[u8]) -> &[u8] {
+    while data.len() >= 10 && data.starts_with(b"ID3") {
+        let flags = data[5];
+        let body_len = data[6..10]
+            .iter()
+            .fold(0usize, |len, &byte| (len << 7) | usize::from(byte & 0x7f));
+        let footer_len = if flags & 0x10 != 0 { 10 } else { 0 };
+        let total = 10usize.saturating_add(body_len).saturating_add(footer_len);
+        if total >= data.len() {
+            return &[];
+        }
+        data = &data[total..];
+    }
+    data
 }
 
 /// A `MediaSource` over caller-owned bytes with the borrow lifetime erased.
@@ -93,6 +134,8 @@ fn decode_mp3_bytes(data: &[u8]) -> Result<DecodedAudio, FingerprintError> {
         return Err(FingerprintError::invalid("MP3 input is too large"));
     }
 
+    let data = skip_id3v2_tags(data);
+
     // SAFETY: the source is consumed entirely within this function while
     // `data` is borrowed, and nothing derived from it outlives the probe or
     // decoder locals below (see `BorrowedByteSource`).
@@ -101,7 +144,7 @@ fn decode_mp3_bytes(data: &[u8]) -> Result<DecodedAudio, FingerprintError> {
     let mut hint = Hint::new();
     hint.with_extension("mp3");
 
-    let probed = symphonia::default::get_probe()
+    let probed = mp3_probe()
         .format(
             &hint,
             media_source,

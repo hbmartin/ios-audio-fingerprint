@@ -68,6 +68,64 @@ fn mp3_prefixed(rng: &mut XorShift, len: usize) -> Vec<u8> {
     bytes
 }
 
+/// Regression inputs for the symphonia-metadata 0.5.5 ID3v2.4 panic.
+///
+/// The crate's extended-header parser decodes the text-encoding restriction
+/// with `(restrictions & 0x40) >> 5`, which can evaluate to 2 and hit an
+/// `unreachable!()` (`id3v2/mod.rs:238`). Found by the `decode_audio` fuzz
+/// target; fixed on our side by never handing tag bytes to the metadata
+/// parser.
+#[test]
+fn decoder_never_panics_on_id3v2_extended_header_restrictions() {
+    // Exact crashing input from CI (crash-9acc0995bc54e688c19ba22b45665b76c34cfb41).
+    let fuzz_crash: &[u8] = &[
+        0x49, 0x44, 0x33, 0x04, 0x2b, 0xcc, 0xf1, 0x06, 0x01, 0x28, 0xf5, 0xcf, 0xb4, 0xf1, 0x01,
+        0x16, 0x01, 0xff, 0x32, 0x00,
+    ];
+    let _ = decode_audio_bytes(fuzz_crash);
+
+    // Well-formed ID3v2.4 tag: extended header with the restrictions flag set
+    // and bit 0x40 of the restrictions byte high — the general panic class.
+    let mut tag = Vec::new();
+    tag.extend_from_slice(b"ID3\x04\x00\x40"); // v2.4, extended-header flag
+    tag.extend_from_slice(&[0x00, 0x00, 0x00, 0x08]); // syncsafe tag body size: 8
+    tag.extend_from_slice(&[0x00, 0x00, 0x00, 0x08]); // syncsafe ext header size: 8
+    tag.push(0x01); // number of flag bytes
+    tag.push(0x10); // restrictions flag
+    tag.push(0x01); // restrictions data length
+    tag.push(0x40); // restrictions byte: (0x40 & 0x40) >> 5 == 2 -> unreachable!()
+    let _ = decode_audio_bytes(&tag);
+}
+
+/// Prepending ID3v2 tags must not change the decoded audio: the decoder skips
+/// them without parsing (see `skip_id3v2_tags`), and the samples must match
+/// the untagged file exactly.
+#[test]
+fn decoder_skips_id3v2_tags_on_real_mp3() {
+    let mp3: &[u8] = include_bytes!("fixtures/reference.mp3");
+    let plain = decode_audio_bytes(mp3).expect("reference.mp3 must decode");
+
+    // ID3v2.3 tag with a 32-byte zero-padded body.
+    let mut v23_tagged = b"ID3\x03\x00\x00\x00\x00\x00\x20".to_vec();
+    v23_tagged.extend_from_slice(&[0u8; 32]);
+    v23_tagged.extend_from_slice(mp3);
+
+    // ID3v2.4 tag with a footer (flag 0x10), followed by a second tag.
+    let mut v24_tagged = b"ID3\x04\x00\x10\x00\x00\x00\x10".to_vec();
+    v24_tagged.extend_from_slice(&[0u8; 16]);
+    v24_tagged.extend_from_slice(b"3DI\x04\x00\x10\x00\x00\x00\x10");
+    v24_tagged.extend_from_slice(b"ID3\x02\x00\x00\x00\x00\x00\x08");
+    v24_tagged.extend_from_slice(&[0u8; 8]);
+    v24_tagged.extend_from_slice(mp3);
+
+    for tagged in [v23_tagged, v24_tagged] {
+        let decoded = decode_audio_bytes(&tagged).expect("tagged MP3 must decode");
+        assert_eq!(decoded.samples, plain.samples);
+        assert_eq!(decoded.sample_rate, plain.sample_rate);
+        assert_eq!(decoded.channels, plain.channels);
+    }
+}
+
 #[test]
 fn decoder_never_panics_on_malformed_input() {
     let mut rng = XorShift(0x9e37_79b9_7f4a_7c15);
