@@ -51,9 +51,13 @@ reviews_triage/
 triage_decisions.db
 rust/target/
 
-# cargo-fuzz local outputs (the targets and README are tracked)
+# cargo-fuzz local outputs (the targets, README, and crash-* regression seeds
+# under corpus/ are tracked)
 rust/fuzz/target/
-rust/fuzz/corpus/
+rust/fuzz/corpus/*
+!rust/fuzz/corpus/decode_audio/
+rust/fuzz/corpus/decode_audio/*
+!rust/fuzz/corpus/decode_audio/crash-*
 rust/fuzz/artifacts/
 rust/fuzz/coverage/
 rust/fuzz/Cargo.lock
