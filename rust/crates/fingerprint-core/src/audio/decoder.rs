@@ -57,9 +57,9 @@ fn mp3_probe() -> &'static Probe {
 ///
 /// Tag layout: `"ID3"`, major version, minor version, flags (1 byte), 28-bit
 /// syncsafe length of the tag body (4 bytes), then the body, plus a 10-byte
-/// footer if the major version is 4 and flag `0x10` is set. A tag that claims
-/// to extend past the end of `data` yields an empty slice, which the caller
-/// reports as unsupported.
+/// footer if the major version is at least 4 and flag `0x10` is set. A tag that
+/// claims to extend past the end of `data` yields an empty slice, which the
+/// caller reports as unsupported.
 fn skip_id3v2_tags(mut data: &[u8]) -> &[u8] {
     while data.len() >= 10 && data.starts_with(b"ID3") {
         let major_version = data[3];
@@ -139,18 +139,23 @@ impl MediaSource for BorrowedByteSource {
 }
 
 fn decode_mp3_bytes(data: &[u8]) -> Result<DecodedAudio, FingerprintError> {
-    if data.len() > MAX_MP3_INPUT_BYTES {
-        return Err(FingerprintError::invalid("MP3 input is too large"));
-    }
-
     let data = skip_id3v2_tags(data);
 
     // A leading ID3v2 tag can wrap a non-MPEG container: some encoders prepend
     // tags to WAV files, and `looks_like_mp3` routes any `ID3`-prefixed input
     // here. With the tag stripped, re-sniff for WAV before probing as MPEG
     // audio so tagged WAV decodes instead of being rejected as unsupported.
+    // This runs before the size cap so a tagged WAV is bounded by the WAV
+    // decoder's own limits, exactly like an untagged WAV of the same size —
+    // otherwise the MP3 cap would reject it with a misleading error.
     if looks_like_wave(data) {
         return decode_wave_bytes(data);
+    }
+
+    // The cap applies to the MPEG payload after any leading tags are stripped,
+    // matching what the decoder actually consumes.
+    if data.len() > MAX_MP3_INPUT_BYTES {
+        return Err(FingerprintError::invalid("MP3 input is too large"));
     }
 
     // SAFETY: the source is consumed entirely within this function while
